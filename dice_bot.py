@@ -252,14 +252,10 @@ def on_win(state: dict) -> dict:
 def on_loss(state: dict, bet_placed: float) -> dict:
     state["streak_loss"]  += 1
     state["cycle_spent"]  += bet_placed
-    streak = state["streak_loss"]
 
-    # Modulo-2: naikkan win chance tiap 2 loss berturut-turut
-    if streak % 2 == 0:
-        state["current_chance"] = min(
-            state["current_chance"] + 2.50,
-            state["max_chance_cap"]
-        )
+    # Chance TIDAK dinaikkan — dengan True Martingale, menaikkan chance
+    # justru menurunkan payout sehingga recovery bet makin besar dan
+    # biaya Circuit Breaker membengkak. Chance tetap di base_chance.
 
     # True Martingale: bet berikutnya dihitung agar 1 WIN menutup
     # semua kerugian siklus ini + profit 1× base_bet.
