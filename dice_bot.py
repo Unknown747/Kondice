@@ -54,8 +54,9 @@ _CONFIG_DEFAULTS = {
     "base_bet"            : 100.0,
     "base_chance"         : 5.0,
     "max_chance_cap"      : 45.0,
-    "target_profit_pct"   : 15.0,
-    "stop_loss_pct"       : 25.0,
+    "target_profit_pct"   : 20.0,
+    "stop_loss_pct"       : 20.0,
+    "recovery_factor"     : 1.02,
     "roll_delay_ms"       : 500,
     "max_api_retries"     : 10,
     "auto_restart_session": True,
@@ -240,27 +241,32 @@ def place_dice_bet(bet_amount: float, win_chance: float, currency: str) -> dict:
 #  STATE MACHINE — strategi modulo-2 / modulo-3
 # ═══════════════════════════════════════════════════════════
 def on_win(state: dict) -> dict:
-    state["current_bet"]    = state["base_bet"]
-    state["current_chance"] = state["base_chance"]
-    state["streak_loss"]    = 0
-    log.info("WIN  → state di-reset ke baseline.")
+    state["current_bet"]      = state["base_bet"]
+    state["current_chance"]   = state["base_chance"]
+    state["streak_loss"]      = 0
+    state["accumulated_loss"] = 0.0   # KOREKSI: hutang terbayar
+    log.info("WIN  → state di-reset ke baseline. Hutang terlunasi.")
     return state
 
 
 def on_loss(state: dict) -> dict:
-    state["streak_loss"] += 1
+    state["accumulated_loss"] += state["current_bet"]   # KOREKSI: catat kerugian
+    state["streak_loss"]      += 1
     streak = state["streak_loss"]
 
-    # Modulo-2: naikkan win chance tiap 2 loss berturut-turut
+    # Modulo-2: naikkan win chance tiap 2 loss berturut-turut (TETAP)
     if streak % 2 == 0:
         state["current_chance"] = min(
             state["current_chance"] + 2.50,
             state["max_chance_cap"]
         )
 
-    # Modulo-3: compound bet tiap 3 loss berturut-turut
-    if streak % 3 == 0:
-        state["current_bet"] *= 1.35
+    # KOREKSI: Recovery-based bet — gantikan ×1.35 modulo-3
+    # Hitung bet minimum agar SATU kemenangan menutup semua kerugian + margin
+    payout_mult = 99.0 / state["current_chance"]
+    if payout_mult > 1 and state["accumulated_loss"] > 0:
+        recovery_bet = (state["accumulated_loss"] * state["recovery_factor"]) / (payout_mult - 1)
+        state["current_bet"] = max(state["base_bet"], round(recovery_bet, 2))
 
     return state
 
@@ -269,12 +275,19 @@ def on_loss(state: dict) -> dict:
 #  GUARDRAILS — dicek SEBELUM setiap bet
 # ═══════════════════════════════════════════════════════════
 def apply_guardrails(state: dict) -> dict:
-    # 1. Circuit breaker: 15 loss berturut-turut → reset semua
+    # 1. Circuit breaker: 15 loss berturut-turut
+    # KOREKSI: hanya reset chance & streak — accumulated_loss DIPERTAHANKAN
+    # agar recovery bet tetap aktif menutup hutang kerugian
     if state["streak_loss"] >= 15:
-        state["current_bet"]    = state["base_bet"]
         state["current_chance"] = state["base_chance"]
         state["streak_loss"]    = 0
-        log.warning("⚠  Circuit Breaker 15 Loss! State di-reset ke baseline.")
+        # Recalculate recovery bet dengan payout tinggi (chance kembali ke base = 19.8x)
+        payout_mult = 99.0 / state["current_chance"]
+        if state["accumulated_loss"] > 0:
+            recovery_bet = (state["accumulated_loss"] * state["recovery_factor"]) / (payout_mult - 1)
+            state["current_bet"] = max(state["base_bet"], round(recovery_bet, 2))
+        log.warning(f"⚠  Circuit Breaker! Chance reset, recovery bet: Rp {state['current_bet']:,.2f} "
+                    f"(hutang: Rp {state['accumulated_loss']:,.2f})")
 
     # 2. Anti-bust: bet > 10% saldo → potong 50%
     if state["current_balance"] > 0 and \
@@ -309,6 +322,7 @@ def log_roll(state: dict, result: str, roll_num: int):
         f"Payout:{payout:.4f}x | "
         f"Bet:{state['current_bet']:>10.2f} IDR | "
         f"Streak:{state['streak_loss']:>2} | "
+        f"Hutang:{state['accumulated_loss']:>10.2f} IDR | "
         f"Net:{net:>+10.2f} IDR"
     )
 
@@ -346,12 +360,14 @@ def new_session_state(cfg: dict, balance: float) -> dict:
         "max_chance_cap"      : cfg["max_chance_cap"],
         "target_profit_pct"   : cfg["target_profit_pct"],
         "stop_loss_pct"       : cfg["stop_loss_pct"],
+        "recovery_factor"     : cfg["recovery_factor"],   # KOREKSI: faktor recovery
         # Dynamic
         "session_start_balance": balance,
         "current_balance"     : balance,
         "current_bet"         : cfg["base_bet"],
         "current_chance"      : cfg["base_chance"],
         "streak_loss"         : 0,
+        "accumulated_loss"    : 0.0,                      # KOREKSI: pelacak hutang
         "roll_count"          : 0,
         "session_active"      : True,
         "session_end_reason"  : None,

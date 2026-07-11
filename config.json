@@ -7,8 +7,9 @@
   "base_chance"         : 5.0,
   "max_chance_cap"      : 45.0,
 
-  "target_profit_pct"   : 15.0,
-  "stop_loss_pct"       : 25.0,
+  "target_profit_pct"   : 20.0,
+  "stop_loss_pct"       : 20.0,
+  "recovery_factor"     : 1.02,
 
   "roll_delay_ms"       : 500,
   "max_api_retries"     : 10,
@@ -20,8 +21,9 @@
     "base_bet"            : "Bet awal tiap sesi dalam IDR",
     "base_chance"         : "Win chance awal (%) — 5 berarti 5%",
     "max_chance_cap"      : "Batas atas win chance saat losing streak",
-    "target_profit_pct"   : "Sesi berhenti saat profit >= X% dari saldo awal sesi",
-    "stop_loss_pct"       : "Sesi berhenti saat loss >= X% dari saldo awal sesi",
+    "target_profit_pct"   : "Sesi berhenti saat profit >= X% dari saldo awal sesi (disimbangi dengan stop_loss_pct)",
+    "stop_loss_pct"       : "Sesi berhenti saat loss >= X% dari saldo awal sesi (sebaiknya = target_profit_pct)",
+    "recovery_factor"     : "Faktor profit di atas break-even saat recovery (1.02 = 2% profit di atas modal kembali)",
     "roll_delay_ms"       : "Jeda antar roll dalam milidetik (0 = secepat mungkin)",
     "max_api_retries"     : "Batas error API berturut-turut sebelum bot berhenti total",
     "auto_restart_session": "true = mulai sesi baru otomatis setelah TP/SL tercapai",
