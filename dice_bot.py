@@ -487,15 +487,16 @@ def main():
                         pass
 
                 # ── Evaluasi hasil roll ──────────────────────
+                # State diupdate DULU, baru log — supaya Streak di log
+                # mencerminkan nilai yang sudah benar setelah roll ini.
                 won = float(result_val) > float(target_val)
-                log_roll(state, "WIN " if won else "LOSS", roll_num_global)
-
                 if won:
                     cum["wins"] += 1
                     state = on_win(state)
                 else:
                     cum["losses"] += 1
                     state = on_loss(state)
+                log_roll(state, "WIN " if won else "LOSS", roll_num_global)
 
                 # ── Delay antar roll ─────────────────────────
                 delay = cfg["roll_delay_ms"] / 1000.0
