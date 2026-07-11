@@ -14,7 +14,7 @@ from requests.exceptions import HTTPError
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
-API_ENDPOINT = "https://stake.com/graphql"
+API_ENDPOINT = "https://stake.com/_api/graphql"
 CURRENCY     = "idr"
 
 BASE_BET          = 100.00
@@ -103,8 +103,22 @@ def _load_api_key() -> str:
 API_KEY = _load_api_key()
 
 HEADERS = {
-    "Content-Type": "application/json",
-    "x-access-token": API_KEY,
+    "Content-Type"                 : "application/json",
+    "Accept"                       : "*/*",
+    "Accept-Language"              : "en-US,en;q=0.9",
+    "Accept-Encoding"              : "gzip, deflate",
+    "Origin"                       : "https://stake.com",
+    "Referer"                       : "https://stake.com/",
+    "User-Agent"                   : (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "x-access-token"               : API_KEY,
+    "x-language"                   : "en",
+    "apollographql-client-name"    : "web",
+    "apollographql-client-version" : "1.0.0",
+    "Connection"                   : "keep-alive",
 }
 
 
@@ -143,10 +157,10 @@ def gql(query: str, variables: dict = None) -> dict:
 
 def fetch_idr_balance() -> float:
     """Return the current available IDR balance."""
-    # FIX: wrap KeyError so the user gets a clear message
+    # API shape: data.user.balances = [ { available: { amount, currency } }, ... ]
     try:
-        data = gql(BALANCE_QUERY)
-        balances = data["user"]["balances"]["available"]
+        data     = gql(BALANCE_QUERY)
+        balances = data["user"]["balances"]   # list of { available: {...} }
     except (KeyError, TypeError) as exc:
         raise RuntimeError(
             f"Could not parse balance response from Stake API: {exc}\n"
@@ -154,8 +168,9 @@ def fetch_idr_balance() -> float:
         ) from exc
 
     for entry in balances:
-        if entry.get("currency", "").lower() == CURRENCY:
-            return float(entry["amount"])
+        avail = entry.get("available", {})
+        if avail.get("currency", "").lower() == CURRENCY:
+            return float(avail["amount"])
 
     raise RuntimeError(
         f"No {CURRENCY.upper()} wallet found on this account. "
@@ -170,11 +185,13 @@ def fetch_current_balance() -> float:
 
 def extract_balance_from_roll(roll_data: dict) -> float | None:
     """Pull the updated IDR balance embedded in the diceRoll response."""
+    # API shape: diceRoll.user.balances = [ { available: { amount, currency } }, ... ]
     try:
-        balances = roll_data["diceRoll"]["user"]["balances"]["available"]
+        balances = roll_data["diceRoll"]["user"]["balances"]
         for entry in balances:
-            if entry.get("currency", "").lower() == CURRENCY:
-                return float(entry["amount"])
+            avail = entry.get("available", {})
+            if avail.get("currency", "").lower() == CURRENCY:
+                return float(avail["amount"])
     except (KeyError, TypeError):
         pass
     return None
