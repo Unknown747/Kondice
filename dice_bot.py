@@ -139,7 +139,6 @@ mutation DiceRoll(
     condition: $condition, currency: $currency, identifier: $identifier
   ) {
     id active payoutMultiplier amountMultiplier amount payout updatedAt currency game
-    ... on CasinoGameDice { result target condition }
     user {
       id
       balances { available { amount currency } }
@@ -474,19 +473,6 @@ def main():
                         time.sleep(3)
                     continue
 
-                result_val = dice.get("result")
-                target_val = dice.get("target")
-                if result_val is None or target_val is None:
-                    consecutive_errors += 1
-                    state["roll_count"] -= 1
-                    log.warning(f"Data roll tidak lengkap #{consecutive_errors} — retry 3 detik...")
-                    if consecutive_errors >= cfg["max_api_retries"]:
-                        state["session_end_reason"] = "API_ERROR"
-                        state["session_active"]     = False
-                    else:
-                        time.sleep(3)
-                    continue
-
                 # ── Update saldo ─────────────────────────────
                 new_bal = extract_balance_from_roll(roll_data, cfg["currency"])
                 if new_bal is not None:
@@ -498,9 +484,10 @@ def main():
                         pass
 
                 # ── Evaluasi hasil roll ──────────────────────
+                # Menang jika payout > 0 (payout=0 berarti kalah)
                 # State diupdate DULU, baru log — supaya Streak di log
                 # mencerminkan nilai yang sudah benar setelah roll ini.
-                won = float(result_val) > float(target_val)
+                won = float(dice.get("payout", 0)) > 0
                 if won:
                     cum["wins"] += 1
                     state = on_win(state)
