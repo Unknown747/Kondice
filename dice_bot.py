@@ -9,6 +9,7 @@ import sys
 import time
 import uuid
 import requests
+from requests.exceptions import HTTPError
 
 # ─────────────────────────────────────────────
 # CONFIG
@@ -24,6 +25,9 @@ STOP_LOSS_PCT     = 25.00
 
 # Delay between rolls (seconds) — set to 0 for max speed
 ROLL_DELAY = 0.5
+
+# Max consecutive API failures before aborting (prevents silent infinite retry)
+MAX_API_RETRIES = 10
 
 # ─────────────────────────────────────────────
 # GRAPHQL QUERIES
@@ -86,15 +90,22 @@ mutation DiceRoll(
 # ─────────────────────────────────────────────
 # API HELPERS
 # ─────────────────────────────────────────────
-def get_headers():
-    api_key = os.environ.get("STAKE_API_KEY")
-    if not api_key:
-        print("[ERROR] STAKE_API_KEY environment variable not set. Exiting.")
+
+# FIX: read token once at startup; fail loudly if missing
+def _load_api_key() -> str:
+    key = os.environ.get("STAKE_API_KEY", "").strip()
+    if not key:
+        print("[ERROR] STAKE_API_KEY environment variable not set.")
+        print("        Set it in .env or export it before running.")
         sys.exit(1)
-    return {
-        "Content-Type": "application/json",
-        "x-access-token": api_key,
-    }
+    return key
+
+API_KEY = _load_api_key()
+
+HEADERS = {
+    "Content-Type": "application/json",
+    "x-access-token": API_KEY,
+}
 
 
 def gql(query: str, variables: dict = None) -> dict:
@@ -103,8 +114,25 @@ def gql(query: str, variables: dict = None) -> dict:
     if variables:
         payload["variables"] = variables
 
-    resp = requests.post(API_ENDPOINT, json=payload, headers=get_headers(), timeout=15)
-    resp.raise_for_status()
+    try:
+        resp = requests.post(API_ENDPOINT, json=payload, headers=HEADERS, timeout=15)
+    except requests.exceptions.ConnectionError as exc:
+        raise RuntimeError(f"Network error: {exc}") from exc
+    except requests.exceptions.Timeout:
+        raise RuntimeError("Request timed out after 15 s")
+
+    # FIX: detect 401 explicitly — token expired, no point retrying
+    if resp.status_code == 401:
+        print("\n[AUTH ERROR] Stake returned 401 Unauthorized.")
+        print("  Your session token has expired. Get a fresh token and")
+        print("  update it with:  ./update_token.sh  then restart the bot.")
+        sys.exit(1)
+
+    try:
+        resp.raise_for_status()
+    except HTTPError as exc:
+        raise RuntimeError(f"HTTP {resp.status_code}: {exc}") from exc
+
     body = resp.json()
 
     if "errors" in body:
@@ -115,12 +143,29 @@ def gql(query: str, variables: dict = None) -> dict:
 
 def fetch_idr_balance() -> float:
     """Return the current available IDR balance."""
-    data = gql(BALANCE_QUERY)
-    balances = data["user"]["balances"]["available"]
+    # FIX: wrap KeyError so the user gets a clear message
+    try:
+        data = gql(BALANCE_QUERY)
+        balances = data["user"]["balances"]["available"]
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError(
+            f"Could not parse balance response from Stake API: {exc}\n"
+            "Check that your token is for the correct account."
+        ) from exc
+
     for entry in balances:
-        if entry["currency"].lower() == CURRENCY:
+        if entry.get("currency", "").lower() == CURRENCY:
             return float(entry["amount"])
-    raise RuntimeError(f"No {CURRENCY.upper()} balance found in account.")
+
+    raise RuntimeError(
+        f"No {CURRENCY.upper()} wallet found on this account. "
+        "Make sure the account has an IDR balance."
+    )
+
+
+def fetch_current_balance() -> float:
+    """Fresh balance fetch — used when embedded balance is unavailable."""
+    return fetch_idr_balance()
 
 
 def extract_balance_from_roll(roll_data: dict) -> float | None:
@@ -128,7 +173,7 @@ def extract_balance_from_roll(roll_data: dict) -> float | None:
     try:
         balances = roll_data["diceRoll"]["user"]["balances"]["available"]
         for entry in balances:
-            if entry["currency"].lower() == CURRENCY:
+            if entry.get("currency", "").lower() == CURRENCY:
                 return float(entry["amount"])
     except (KeyError, TypeError):
         pass
@@ -195,27 +240,31 @@ def apply_guardrails(state: dict) -> dict:
         print("  ⚠ Circuit Breaker Tripped at 15 Losses. Deficit absorbed. Baseline restored.")
 
     # 2. Anti-bust: bet > 10 % of remaining balance → halve it
-    if state["CURRENT_BET"] > state["CURRENT_BALANCE"] * 0.10:
+    #    FIX: guard against zero/negative balance to avoid dividing by 0 or
+    #         the guardrail never triggering on a near-busted account
+    if state["CURRENT_BALANCE"] > 0 and \
+            state["CURRENT_BET"] > state["CURRENT_BALANCE"] * 0.10:
         state["CURRENT_BET"] *= 0.50
         print("  ⚠ Risk mitigation triggered. Compounding IDR bet scaled down by 50%.")
 
     # 3. Take-profit / stop-loss
-    net = state["CURRENT_BALANCE"] - state["INITIAL_BALANCE"]
+    net           = state["CURRENT_BALANCE"] - state["INITIAL_BALANCE"]
     tp_threshold  =  state["INITIAL_BALANCE"] * (state["TARGET_PROFIT_PCT"] / 100)
     sl_threshold  = -state["INITIAL_BALANCE"] * (state["STOP_LOSS_PCT"]     / 100)
 
     if net >= tp_threshold:
         print(f"\n✅ Target Profit Reached Successfully in IDR. Net: {net:+.2f} IDR")
-        terminate(state, "Target Profit Reached Successfully in IDR.")
+        _terminate(state, "Target Profit Reached Successfully in IDR.")
 
     if net <= sl_threshold:
         print(f"\n🛑 Hard Stop-Loss Triggered. Protecting remaining IDR assets. Net: {net:+.2f} IDR")
-        terminate(state, "Hard Stop-Loss Triggered. Protecting remaining IDR assets.")
+        _terminate(state, "Hard Stop-Loss Triggered. Protecting remaining IDR assets.")
 
     return state
 
 
-def terminate(state: dict, reason: str):
+def _terminate(state: dict, reason: str):
+    """Print session summary and exit cleanly."""
     print(f"\n{'='*60}")
     print(f"  SESSION TERMINATED: {reason}")
     print(f"  Total Rolls  : {state['ROLL_COUNT']}")
@@ -230,7 +279,7 @@ def terminate(state: dict, reason: str):
 # TELEMETRY
 # ─────────────────────────────────────────────
 def log_roll(state: dict, result: str):
-    net = state["CURRENT_BALANCE"] - state["INITIAL_BALANCE"]
+    net    = state["CURRENT_BALANCE"] - state["INITIAL_BALANCE"]
     payout = round(99 / state["CURRENT_CHANCE"], 4)
     print(
         f"[Roll #{state['ROLL_COUNT']:>5}] | "
@@ -279,6 +328,8 @@ def main():
     print("\n[RUNNING] Starting roll loop. Press Ctrl+C to stop.\n")
 
     # ── Roll Loop ────────────────────────────────────────────────
+    consecutive_errors = 0
+
     try:
         while True:
             # Guardrails before each bet
@@ -287,27 +338,59 @@ def main():
             state["ROLL_COUNT"] += 1
             try:
                 roll_data = place_dice_bet(state["CURRENT_BET"], state["CURRENT_CHANCE"])
-            except Exception as exc:
-                print(f"  [API ERROR] {exc} — retrying in 3 s…")
+                consecutive_errors = 0  # reset on success
+            except RuntimeError as exc:
+                consecutive_errors += 1
+                # FIX: cap retries — abort after MAX_API_RETRIES consecutive failures
+                print(f"  [API ERROR #{consecutive_errors}/{MAX_API_RETRIES}] {exc} — retrying in 3 s…")
+                if consecutive_errors >= MAX_API_RETRIES:
+                    print(f"\n[FATAL] {MAX_API_RETRIES} consecutive API failures. Aborting to protect balance.")
+                    _terminate(state, f"Aborted after {MAX_API_RETRIES} consecutive API errors.")
                 time.sleep(3)
                 state["ROLL_COUNT"] -= 1  # don't count failed requests
                 continue
 
-            dice = roll_data.get("diceRoll", {})
-            result_val = dice.get("result", None)
-            target_val = dice.get("target", 100 - state["CURRENT_CHANCE"])
+            dice = roll_data.get("diceRoll")
 
-            # Determine win/loss from result vs target (Roll Over = above)
-            if result_val is not None:
-                won = float(result_val) > float(target_val)
-            else:
-                # Fallback: payout > 0 means win
-                won = float(dice.get("payout", 0)) > 0
+            # FIX: if diceRoll key is missing entirely, treat as an API error
+            # (don't silently count it as a loss and compound the bet)
+            if not dice:
+                consecutive_errors += 1
+                print(f"  [API ERROR #{consecutive_errors}/{MAX_API_RETRIES}] Empty diceRoll in response — retrying in 3 s…")
+                if consecutive_errors >= MAX_API_RETRIES:
+                    print(f"\n[FATAL] {MAX_API_RETRIES} consecutive empty responses. Aborting.")
+                    _terminate(state, f"Aborted after {MAX_API_RETRIES} consecutive empty API responses.")
+                time.sleep(3)
+                state["ROLL_COUNT"] -= 1
+                continue
+
+            result_val = dice.get("result")
+            target_val = dice.get("target")
+
+            # FIX: determine win/loss only from result vs target (Roll Over = above)
+            # Removed the payout fallback — if result is absent, treat as API error
+            if result_val is None or target_val is None:
+                consecutive_errors += 1
+                print(f"  [API ERROR #{consecutive_errors}/{MAX_API_RETRIES}] Missing result/target in response — retrying in 3 s…")
+                if consecutive_errors >= MAX_API_RETRIES:
+                    _terminate(state, f"Aborted after {MAX_API_RETRIES} consecutive malformed responses.")
+                time.sleep(3)
+                state["ROLL_COUNT"] -= 1
+                continue
+
+            won = float(result_val) > float(target_val)
 
             # Update balance from embedded response (avoids an extra API call)
             new_bal = extract_balance_from_roll(roll_data)
             if new_bal is not None:
                 state["CURRENT_BALANCE"] = new_bal
+            else:
+                # FIX: if balance isn't in the roll response, fetch it explicitly
+                # so anti-bust guardrail always works with current data
+                try:
+                    state["CURRENT_BALANCE"] = fetch_current_balance()
+                except RuntimeError:
+                    pass  # keep last known balance; guardrail will still apply
 
             if won:
                 log_roll(state, " W ")
@@ -321,7 +404,7 @@ def main():
 
     except KeyboardInterrupt:
         print("\n\n[STOPPED] Manual interrupt.")
-        terminate(state, "Manually stopped by user.")
+        _terminate(state, "Manually stopped by user.")
 
 
 if __name__ == "__main__":
