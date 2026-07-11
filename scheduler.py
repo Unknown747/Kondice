@@ -7,7 +7,7 @@ Jalankan: python scheduler.py
 Hentikan: Ctrl+C
 """
 
-import subprocess, sys, os, time, threading, signal
+import subprocess, sys, os, time, threading, signal, requests
 from datetime import datetime, timedelta
 
 # ── Konfigurasi siklus ────────────────────────────────────
@@ -15,7 +15,95 @@ RUN_MINUTES   = 30    # durasi bot aktif per siklus
 PAUSE_MINUTES = 10    # durasi jeda antar siklus
 BOT_SCRIPT    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dice_bot.py")
 
+# ── Stake API ─────────────────────────────────────────────
+API_URL  = "https://stake.com/_api/graphql"
+API_KEY  = os.environ.get("STAKE_API_KEY", "").strip()
+
+# Urutan naik flag VIP di Stake
+VIP_FLAGS = ["bronze", "silver", "gold", "platinum", "diamond", "obsidian", "master"]
+VIP_LABEL = {
+    "bronze"  : "🥉 Bronze",
+    "silver"  : "🥈 Silver",
+    "gold"    : "🥇 Gold",
+    "platinum": "💎 Platinum",
+    "diamond" : "💠 Diamond",
+    "obsidian": "🖤 Obsidian",
+    "master"  : "👑 Master",
+}
+
+_api_session = requests.Session()
+_api_session.headers.update({
+    "Content-Type"                : "application/json",
+    "Accept"                      : "*/*",
+    "Accept-Language"             : "en-US,en;q=0.9",
+    "Accept-Encoding"             : "gzip, deflate",
+    "Origin"                      : "https://stake.com",
+    "Referer"                     : "https://stake.com/",
+    "User-Agent"                  : (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "x-access-token"              : API_KEY,
+    "x-language"                  : "en",
+    "apollographql-client-name"   : "web",
+    "apollographql-client-version": "1.0.0",
+    "Connection"                  : "keep-alive",
+})
+
+STATS_QUERY = """
+query SchedulerStats {
+  user {
+    name
+    flagProgress { progress flag }
+    statistic { amount currency game }
+  }
+}
+"""
+
+def fetch_stake_stats() -> dict | None:
+    """Ambil VIP progress + total wager IDR dari API Stake. Return None jika gagal."""
+    try:
+        r = _api_session.post(API_URL, json={"query": STATS_QUERY}, timeout=15)
+        if r.status_code != 200 or not r.text:
+            return None
+        d = r.json()
+        if "errors" in d:
+            return None
+        u = d.get("data", {}).get("user", {})
+
+        # VIP flag progress
+        fp = u.get("flagProgress") or {}
+        flag     = fp.get("flag", "?").lower()
+        progress = float(fp.get("progress", 0))
+
+        # Next flag label
+        try:
+            idx      = VIP_FLAGS.index(flag)
+            next_flag = VIP_FLAGS[idx + 1] if idx + 1 < len(VIP_FLAGS) else None
+        except ValueError:
+            next_flag = None
+
+        # Total wager IDR (statistic array, filter currency=idr, game=dice)
+        total_idr = 0.0
+        for st in u.get("statistic", []):
+            if st.get("currency") == "idr" and st.get("game") == "dice":
+                total_idr = float(st.get("amount", 0))
+                break
+
+        return {
+            "name"      : u.get("name", "?"),
+            "flag"      : flag,
+            "progress"  : progress,
+            "next_flag" : next_flag,
+            "total_idr" : total_idr,
+        }
+    except Exception:
+        return None
+
 # ── Helpers display ───────────────────────────────────────
+W = 62  # lebar box
+
 def now_str():
     return datetime.now().strftime("%H:%M:%S")
 
@@ -33,37 +121,103 @@ def fmt_dur_long(seconds):
         return f"{h}j {m}m"
     return f"{m}m {s}s"
 
+def fmt_rp(amount: float) -> str:
+    """Format angka → Rp 1.234.567,89"""
+    return f"Rp {amount:>15,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+def progress_bar(pct: float, width: int = 22) -> str:
+    """0-100 → ████░░░░░░"""
+    done = int(pct / 100 * width)
+    return "█" * done + "░" * (width - done)
+
+def box_line(text: str = "") -> str:
+    return "│  " + text.ljust(W - 4) + "│"
+
+def box_sep():
+    return "├" + "─" * W + "┤"
+
 def print_banner():
-    print("\n" + "╔" + "═"*60 + "╗")
-    print("║" + "  STAKE DICE BOT — AUTO SCHEDULER".center(60) + "║")
-    print("║" + f"  ▶ Jalan {RUN_MINUTES} mnt  →  ⏸ Jeda {PAUSE_MINUTES} mnt  →  ♻  Ulangi".center(60) + "║")
-    print("║" + "  Ctrl+C untuk berhenti kapanpun".center(60) + "║")
-    print("╚" + "═"*60 + "╝\n")
+    print("\n" + "╔" + "═" * W + "╗")
+    print("║" + "  STAKE DICE BOT — AUTO SCHEDULER".center(W) + "║")
+    print("║" + f"  ▶ Jalan {RUN_MINUTES} mnt  →  ⏸ Jeda {PAUSE_MINUTES} mnt  →  ♻ Ulangi".center(W) + "║")
+    print("║" + "  Ctrl+C untuk berhenti kapanpun".center(W) + "║")
+    print("╚" + "═" * W + "╝\n")
 
 def print_run_header(cycle, start_at, stop_at):
-    print("┌" + "─"*60 + "┐")
-    print("│" + f"  ▶  SIKLUS #{cycle}  —  BOT JALAN".ljust(60) + "│")
-    print("│" + f"  Mulai : {start_at}   |   Stop  : {stop_at}   |   Durasi: {RUN_MINUTES} mnt".ljust(60) + "│")
-    print("└" + "─"*60 + "┘")
+    print("┌" + "─" * W + "┐")
+    print("│" + f"  ▶  SIKLUS #{cycle}  —  BOT JALAN".ljust(W) + "│")
+    print("│" + f"  Mulai : {start_at}   |   Stop  : {stop_at}   |   Durasi: {RUN_MINUTES} mnt".ljust(W) + "│")
+    print("└" + "─" * W + "┘")
 
 def print_pause_header(cycle, start_at, resume_at):
-    print("\n" + "┌" + "─"*60 + "┐")
-    print("│" + f"  ⏸  SIKLUS #{cycle}  —  BOT DIJEDA".ljust(60) + "│")
-    print("│" + f"  Mulai jeda : {start_at}   |   Lanjut : {resume_at}".ljust(60) + "│")
-    print("└" + "─"*60 + "┘")
+    print("\n" + "┌" + "─" * W + "┐")
+    print("│" + f"  ⏸  SIKLUS #{cycle}  —  BOT DIJEDA".ljust(W) + "│")
+    print("│" + f"  Mulai jeda : {start_at}   |   Lanjut : {resume_at}".ljust(W) + "│")
+    print("└" + "─" * W + "┘")
 
-def print_status_tick(label, remaining, total, cycle, extra=""):
-    done  = int((1 - remaining / total) * 24)
-    bar   = "█" * done + "░" * (24 - done)
-    pct   = int((1 - remaining / total) * 100)
-    print(f"\r  {label} [{bar}] {fmt_dur(remaining)} sisa  ({pct}%)  {extra}  ", end="", flush=True)
+def print_status_tick(label, remaining, total, extra=""):
+    pct  = int((1 - remaining / total) * 100)
+    done = int(pct / 100 * 22)
+    bar  = "█" * done + "░" * (22 - done)
+    print(f"\r  {label} [{bar}] {fmt_dur(remaining)} sisa  ({pct}%)  {extra}  ",
+          end="", flush=True)
 
-def print_separator(title=""):
-    if title:
-        pad = (60 - len(title) - 2) // 2
-        print(f"\n  {'─'*pad} {title} {'─'*pad}")
+def print_vip_wager_report(cycle: int, stats_before: dict | None, stats_after: dict | None,
+                            wager_this_cycle: float, wager_today: float,
+                            elapsed_run: float, line_count: int, restarts: int):
+    """
+    Cetak kotak laporan VIP + Wager setelah setiap run phase selesai.
+    """
+    print("\n" + "┌" + "─" * W + "┐")
+    print("│" + f"  📊  LAPORAN SIKLUS #{cycle}  —  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}".ljust(W) + "│")
+    print(box_sep())
+
+    # ── Statistik run ─────────────────────────────────────
+    print(box_line("  RINGKASAN RUN"))
+    print(box_line(f"  Durasi jalan   : {fmt_dur_long(elapsed_run)}"))
+    print(box_line(f"  Baris log      : {line_count:,}  |  Restart bot: {restarts}"))
+    print(box_sep())
+
+    # ── VIP ───────────────────────────────────────────────
+    print(box_line("  VIP STATUS"))
+    if stats_after:
+        flag      = stats_after["flag"]
+        prog      = stats_after["progress"] * 100          # 0-100
+        next_flag = stats_after["next_flag"]
+        label_cur = VIP_LABEL.get(flag, flag.capitalize())
+        label_nxt = VIP_LABEL.get(next_flag, next_flag.capitalize()) if next_flag else "MAX"
+        bar       = progress_bar(prog, 24)
+
+        print(box_line(f"  Level saat ini : {label_cur}"))
+        print(box_line(f"  Menuju         : {label_nxt}"))
+        print(box_line(f"  Progress EXP   : [{bar}]  {prog:.2f}%"))
+
+        # Delta EXP siklus ini
+        if stats_before and stats_before["flag"] == stats_after["flag"]:
+            delta_prog = (stats_after["progress"] - stats_before["progress"]) * 100
+            sign = "+" if delta_prog >= 0 else ""
+            print(box_line(f"  EXP siklus ini : {sign}{delta_prog:.4f}%"))
     else:
-        print("  " + "─"*60)
+        print(box_line("  (Gagal ambil data VIP dari API)"))
+    print(box_sep())
+
+    # ── Wager ─────────────────────────────────────────────
+    print(box_line("  WAGER YANG DIHASILKAN BOT"))
+    print(box_line(f"  Siklus #{cycle:>2}      : {fmt_rp(wager_this_cycle)}"))
+    print(box_line(f"  Total hari ini : {fmt_rp(wager_today)}  ({cycle} siklus)"))
+    print(box_sep())
+
+    print(box_line("  TOTAL WAGER AKUN (IDR DICE)"))
+    if stats_after:
+        tw = stats_after["total_idr"]
+        print(box_line(f"  Sekarang       : {fmt_rp(tw)}"))
+        if stats_before:
+            delta = tw - stats_before["total_idr"]
+            print(box_line(f"  Naik siklus ini: {fmt_rp(delta)}"))
+    else:
+        print(box_line("  (Gagal ambil data dari API)"))
+
+    print("└" + "─" * W + "┘\n")
 
 # ── Output forwarder ──────────────────────────────────────
 def forward_output(proc, stop_event, line_count):
@@ -75,13 +229,28 @@ def forward_output(proc, stop_event, line_count):
         line_count[0] += 1
 
 # ── Fase JALAN ────────────────────────────────────────────
-def run_phase(cycle, stats):
+def run_phase(cycle: int, stats: dict, wager_today: float) -> tuple[float, float]:
+    """
+    Jalankan bot selama RUN_MINUTES menit.
+    Return (elapsed_seconds, wager_this_cycle).
+    """
     duration = RUN_MINUTES * 60
     start    = time.monotonic()
     start_dt = datetime.now()
     stop_dt  = start_dt + timedelta(seconds=duration)
 
     print_run_header(cycle, start_dt.strftime("%H:%M:%S"), stop_dt.strftime("%H:%M:%S"))
+
+    # Snapshot VIP + wager SEBELUM run
+    print(f"  [{now_str()}]  ⟳  Mengambil data VIP & wager awal...", flush=True)
+    stats_before = fetch_stake_stats()
+    if stats_before:
+        label = VIP_LABEL.get(stats_before["flag"], stats_before["flag"].capitalize())
+        prog  = stats_before["progress"] * 100
+        print(f"  [{now_str()}]  ✓  VIP: {label}  |  EXP: {prog:.2f}%  |  "
+              f"Total wager: {fmt_rp(stats_before['total_idr'])}\n", flush=True)
+    else:
+        print(f"  [{now_str()}]  ⚠  Gagal ambil data awal (akan dicoba lagi di akhir)\n", flush=True)
 
     proc         = None
     stop_event   = threading.Event()
@@ -98,11 +267,11 @@ def run_phase(cycle, stats):
             # Mulai (atau restart) bot jika belum jalan
             if proc is None or proc.poll() is not None:
                 if proc is not None:
-                    # Bot mati sebelum waktunya — restart
                     restarts += 1
                     stop_event.set()
                     stop_event = threading.Event()
-                    print_separator(f"Bot berhenti sendiri — restart #{restarts} | {now_str()}")
+                    print(f"\n  ─── [{now_str()}]  Bot berhenti sendiri — restart #{restarts} ───\n",
+                          flush=True)
 
                 proc = subprocess.Popen(
                     [sys.executable, BOT_SCRIPT],
@@ -122,8 +291,10 @@ def run_phase(cycle, stats):
             elapsed_int = int(elapsed)
             if elapsed_int > 0 and elapsed_int % 300 == 0 and elapsed_int != stats.get("last_tick_run"):
                 stats["last_tick_run"] = elapsed_int
+                resume = datetime.now() + timedelta(seconds=remaining)
                 print(f"\n  [⏱  {now_str()}  |  Sisa jalan: {fmt_dur(remaining)}"
-                      f"  |  Siklus #{cycle}  |  Baris log: {line_count[0]}]\n", flush=True)
+                      f"  |  Siklus #{cycle}  |  Log: {line_count[0]:,} baris"
+                      f"  |  Stop: {resume.strftime('%H:%M:%S')}]\n", flush=True)
 
             time.sleep(0.5)
 
@@ -139,17 +310,42 @@ def run_phase(cycle, stats):
                 proc.wait()
 
     elapsed_real = time.monotonic() - start
+
+    # Snapshot VIP + wager SETELAH run
+    print(f"\n  [{now_str()}]  ⟳  Mengambil data VIP & wager akhir...", flush=True)
+    time.sleep(2)   # beri jeda kecil agar Stake sempat update statistik
+    stats_after = fetch_stake_stats()
+
+    # Hitung wager siklus ini
+    wager_this_cycle = 0.0
+    if stats_before and stats_after:
+        wager_this_cycle = max(0.0, stats_after["total_idr"] - stats_before["total_idr"])
+    elif stats_after:
+        wager_this_cycle = 0.0   # tidak bisa hitung delta
+
+    wager_today_new = wager_today + wager_this_cycle
+
+    # Perbarui akumulator global
     stats["total_run"]    += elapsed_real
     stats["total_lines"]  += line_count[0]
     stats["restarts"]     += restarts
 
-    print_separator(f"Siklus #{cycle} selesai — {now_str()}")
-    print(f"  Durasi jalan : {fmt_dur_long(elapsed_real)}")
-    print(f"  Baris log    : {line_count[0]}  |  Restart bot: {restarts}")
-    return elapsed_real
+    # Cetak laporan
+    print_vip_wager_report(
+        cycle         = cycle,
+        stats_before  = stats_before,
+        stats_after   = stats_after,
+        wager_this_cycle = wager_this_cycle,
+        wager_today   = wager_today_new,
+        elapsed_run   = elapsed_real,
+        line_count    = line_count[0],
+        restarts      = restarts,
+    )
+
+    return elapsed_real, wager_today_new
 
 # ── Fase JEDA ─────────────────────────────────────────────
-def pause_phase(cycle, stats):
+def pause_phase(cycle: int, stats: dict):
     duration  = PAUSE_MINUTES * 60
     start     = time.monotonic()
     start_dt  = datetime.now()
@@ -169,63 +365,69 @@ def pause_phase(cycle, stats):
             pct = int((elapsed / duration) * 100)
             if pct != last_pct:
                 last_pct = pct
-                print_status_tick("⏸ JEDA", remaining, duration, cycle,
+                print_status_tick("⏸ JEDA", remaining, duration,
                                   f"Lanjut {resume_dt.strftime('%H:%M:%S')}")
-
             time.sleep(1)
 
     finally:
         stats["total_pause"] += PAUSE_MINUTES * 60
 
-    print(f"\r  ✅ Jeda selesai — {now_str()}{' '*30}", flush=True)
+    print(f"\r  ✅  Jeda selesai — {now_str()}{' ' * 35}", flush=True)
 
 # ── Main ──────────────────────────────────────────────────
 def main():
-    # Tangani SIGTERM agar tidak crash di VPS
     signal.signal(signal.SIGTERM, lambda s, f: sys.exit(0))
+
+    if not API_KEY:
+        print("⚠  STAKE_API_KEY tidak ditemukan — data VIP/wager tidak tersedia\n")
 
     print_banner()
 
     stats = {
-        "total_run"  : 0.0,
-        "total_pause": 0.0,
-        "total_lines": 0,
-        "restarts"   : 0,
+        "total_run"    : 0.0,
+        "total_pause"  : 0.0,
+        "total_lines"  : 0,
+        "restarts"     : 0,
         "last_tick_run": -1,
     }
 
-    cycle = 0
-    start_global = time.monotonic()
+    wager_today   = 0.0
+    cycle         = 0
+    start_global  = time.monotonic()
 
     try:
         while True:
             cycle += 1
-            run_phase(cycle, stats)
+
+            # ── Run ───────────────────────────────────────
+            elapsed_run, wager_today = run_phase(cycle, stats, wager_today)
+
+            # ── Pause ─────────────────────────────────────
             pause_phase(cycle, stats)
 
-            # Ringkasan kumulatif setelah tiap siklus lengkap
+            # Ringkasan kumulatif
             uptime = time.monotonic() - start_global
             print()
-            print("  ┄" * 20)
-            print(f"  RINGKASAN  |  Siklus: {cycle}  |  Uptime: {fmt_dur_long(uptime)}")
-            print(f"  Total jalan: {fmt_dur_long(stats['total_run'])}"
-                  f"  |  Total jeda: {fmt_dur_long(stats['total_pause'])}")
-            print(f"  Total log  : {stats['total_lines']} baris"
-                  f"  |  Bot restart: {stats['restarts']}")
-            print("  ┄" * 20 + "\n")
+            print("  " + "┄" * 31)
+            print(f"  TOTAL  |  Siklus selesai: {cycle}  |  Uptime: {fmt_dur_long(uptime)}")
+            print(f"  Jalan: {fmt_dur_long(stats['total_run'])}  "
+                  f"|  Jeda: {fmt_dur_long(stats['total_pause'])}  "
+                  f"|  Wager hari ini: {fmt_rp(wager_today)}")
+            print("  " + "┄" * 31 + "\n")
 
     except KeyboardInterrupt:
         uptime = time.monotonic() - start_global
-        print(f"\n\n{'═'*62}")
+        print(f"\n\n{'═' * W}")
         print("  Scheduler dihentikan (Ctrl+C)")
-        print(f"{'═'*62}")
+        print(f"{'═' * W}")
         print(f"  Siklus selesai : {cycle}")
         print(f"  Uptime total   : {fmt_dur_long(uptime)}")
         print(f"  Total jalan    : {fmt_dur_long(stats['total_run'])}")
         print(f"  Total jeda     : {fmt_dur_long(stats['total_pause'])}")
-        print(f"  Total log      : {stats['total_lines']} baris")
+        print(f"  Total log      : {stats['total_lines']:,} baris")
         print(f"  Bot restart    : {stats['restarts']}")
-        print(f"{'═'*62}\n")
+        print(f"  Wager hari ini : {fmt_rp(wager_today)}")
+        print(f"{'═' * W}\n")
 
 if __name__ == "__main__":
     main()
