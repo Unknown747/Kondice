@@ -1,45 +1,125 @@
 """
-Dice Automation Bot — Stake API (IDR)
-Implements the full spec: state machines, guardrails, telemetry.
-Requires: STAKE_API_KEY environment variable (your Stake session token).
+Stake Dice Bot — IDR
+Strategi  : Modulo-2 chance scaling + Modulo-3 stake compounding
+Config    : config.json (hot-reload tiap sesi baru)
+Log       : dice_bot.log (auto-rotate 5 MB)
 """
 
-import os
-import sys
-import time
-import uuid
+import os, sys, time, uuid, json, re, logging
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
+
 import requests
-from requests.exceptions import HTTPError
+from requests.exceptions import HTTPError, ConnectionError as ReqConnError, Timeout as ReqTimeout
 
-# ─────────────────────────────────────────────
-# CONFIG
-# ─────────────────────────────────────────────
-API_ENDPOINT = "https://stake.com/_api/graphql"
-CURRENCY     = "idr"
+# ═══════════════════════════════════════════════════════════
+#  CONSTANTS
+# ═══════════════════════════════════════════════════════════
+API_ENDPOINT  = "https://stake.com/_api/graphql"
+CONFIG_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+LOG_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dice_bot.log")
 
-BASE_BET          = 100.00
-BASE_CHANCE       = 5.00
-MAX_CHANCE_CAP    = 45.00
-TARGET_PROFIT_PCT = 15.00
-STOP_LOSS_PCT     = 25.00
+# ═══════════════════════════════════════════════════════════
+#  LOGGING (terminal + file dengan rotate 5 MB)
+# ═══════════════════════════════════════════════════════════
+def _setup_logger() -> logging.Logger:
+    fmt = logging.Formatter(
+        fmt="[%(asctime)s] [%(levelname)-5s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    logger = logging.getLogger("dice_bot")
+    logger.setLevel(logging.DEBUG)
 
-# Delay between rolls (seconds) — set to 0 for max speed
-ROLL_DELAY = 0.5
+    # File handler — rotate at 5 MB, keep 1 backup
+    fh = RotatingFileHandler(LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=1, encoding="utf-8")
+    fh.setFormatter(fmt)
+    fh.setLevel(logging.DEBUG)
 
-# Max consecutive API failures before aborting (prevents silent infinite retry)
-MAX_API_RETRIES = 10
+    # Terminal handler — INFO and above only
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setFormatter(fmt)
+    ch.setLevel(logging.INFO)
 
-# ─────────────────────────────────────────────
-# GRAPHQL QUERIES
-# ─────────────────────────────────────────────
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+    return logger
+
+log = _setup_logger()
+
+# ═══════════════════════════════════════════════════════════
+#  CONFIG — baca config.json, reload tiap sesi baru
+# ═══════════════════════════════════════════════════════════
+_CONFIG_DEFAULTS = {
+    "currency"            : "idr",
+    "base_bet"            : 100.0,
+    "base_chance"         : 5.0,
+    "max_chance_cap"      : 45.0,
+    "target_profit_pct"   : 15.0,
+    "stop_loss_pct"       : 25.0,
+    "roll_delay_ms"       : 500,
+    "max_api_retries"     : 10,
+    "auto_restart_session": True,
+    "max_sessions"        : 0,
+}
+
+def load_config() -> dict:
+    """Baca config.json, fallback ke default kalau key tidak ada."""
+    cfg = dict(_CONFIG_DEFAULTS)
+    if not os.path.exists(CONFIG_FILE):
+        log.warning(f"config.json tidak ditemukan — pakai nilai default. "
+                    f"Buat file di: {CONFIG_FILE}")
+        return cfg
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            data = json.load(f)
+        for k, v in _CONFIG_DEFAULTS.items():
+            if k in data:
+                cfg[k] = type(v)(data[k])  # cast ke tipe default
+        log.debug(f"Config dimuat dari {CONFIG_FILE}")
+    except Exception as exc:
+        log.error(f"Gagal baca config.json: {exc} — pakai nilai default")
+    return cfg
+
+# ═══════════════════════════════════════════════════════════
+#  SESSION (persistent HTTP session + headers)
+# ═══════════════════════════════════════════════════════════
+def _load_api_key() -> str:
+    key = os.environ.get("STAKE_API_KEY", "").strip()
+    if not key:
+        log.error("STAKE_API_KEY belum diset. Set di .env atau export dulu.")
+        sys.exit(1)
+    return key
+
+API_KEY = _load_api_key()
+
+_session = requests.Session()
+_session.headers.update({
+    "Content-Type"                : "application/json",
+    "Accept"                      : "*/*",
+    "Accept-Language"             : "en-US,en;q=0.9",
+    "Accept-Encoding"             : "gzip, deflate",
+    "Origin"                      : "https://stake.com",
+    "Referer"                     : "https://stake.com/",
+    "User-Agent"                  : (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/125.0.0.0 Safari/537.36"
+    ),
+    "x-access-token"              : API_KEY,
+    "x-language"                  : "en",
+    "apollographql-client-name"   : "web",
+    "apollographql-client-version": "1.0.0",
+    "Connection"                  : "keep-alive",
+})
+
+# ═══════════════════════════════════════════════════════════
+#  GRAPHQL
+# ═══════════════════════════════════════════════════════════
 BALANCE_QUERY = """
 query UserBalances {
   user {
     balances {
-      available {
-        amount
-        currency
-      }
+      available { amount currency }
     }
   }
 }
@@ -47,100 +127,49 @@ query UserBalances {
 
 DICE_MUTATION = """
 mutation DiceRoll(
-  $amount: Float!,
-  $target: Float!,
+  $amount: Float!, $target: Float!,
   $condition: CasinoGameDiceConditionEnum!,
-  $currency: CurrencyEnum!,
-  $identifier: String!
+  $currency: CurrencyEnum!, $identifier: String!
 ) {
   diceRoll(
-    amount: $amount,
-    target: $target,
-    condition: $condition,
-    currency: $currency,
-    identifier: $identifier
+    amount: $amount, target: $target,
+    condition: $condition, currency: $currency, identifier: $identifier
   ) {
-    id
-    active
-    payoutMultiplier
-    amountMultiplier
-    amount
-    payout
-    updatedAt
-    currency
-    game
-    ... on CasinoGameDice {
-      result
-      target
-      condition
-    }
+    id active payoutMultiplier amountMultiplier amount payout updatedAt currency game
+    ... on CasinoGameDice { result target condition }
     user {
       id
-      balances {
-        available {
-          amount
-          currency
-        }
-      }
+      balances { available { amount currency } }
     }
   }
 }
 """
 
-# ─────────────────────────────────────────────
-# API HELPERS
-# ─────────────────────────────────────────────
+_RATE_LIMIT_RE = re.compile(r"rate.?limit|too many request|throttl", re.IGNORECASE)
 
-# FIX: read token once at startup; fail loudly if missing
-def _load_api_key() -> str:
-    key = os.environ.get("STAKE_API_KEY", "").strip()
-    if not key:
-        print("[ERROR] STAKE_API_KEY environment variable not set.")
-        print("        Set it in .env or export it before running.")
-        sys.exit(1)
-    return key
+class RateLimitError(Exception):
+    pass
 
-API_KEY = _load_api_key()
-
-HEADERS = {
-    "Content-Type"                 : "application/json",
-    "Accept"                       : "*/*",
-    "Accept-Language"              : "en-US,en;q=0.9",
-    "Accept-Encoding"              : "gzip, deflate",
-    "Origin"                       : "https://stake.com",
-    "Referer"                       : "https://stake.com/",
-    "User-Agent"                   : (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/125.0.0.0 Safari/537.36"
-    ),
-    "x-access-token"               : API_KEY,
-    "x-language"                   : "en",
-    "apollographql-client-name"    : "web",
-    "apollographql-client-version" : "1.0.0",
-    "Connection"                   : "keep-alive",
-}
-
+class AuthError(Exception):
+    pass
 
 def gql(query: str, variables: dict = None) -> dict:
-    """Execute a GraphQL request and return the data payload."""
+    """Kirim GraphQL request, return data payload."""
     payload = {"query": query}
     if variables:
         payload["variables"] = variables
 
     try:
-        resp = requests.post(API_ENDPOINT, json=payload, headers=HEADERS, timeout=15)
-    except requests.exceptions.ConnectionError as exc:
-        raise RuntimeError(f"Network error: {exc}") from exc
-    except requests.exceptions.Timeout:
-        raise RuntimeError("Request timed out after 15 s")
+        resp = _session.post(API_ENDPOINT, json=payload, timeout=15)
+    except ReqConnError as exc:
+        raise RuntimeError(f"Koneksi terputus: {exc}") from exc
+    except ReqTimeout:
+        raise RuntimeError("Request timeout setelah 15 detik")
 
-    # FIX: detect 401 explicitly — token expired, no point retrying
     if resp.status_code == 401:
-        print("\n[AUTH ERROR] Stake returned 401 Unauthorized.")
-        print("  Your session token has expired. Get a fresh token and")
-        print("  update it with:  ./update_token.sh  then restart the bot.")
-        sys.exit(1)
+        raise AuthError("Token expired atau tidak valid (HTTP 401)")
+    if resp.status_code == 429:
+        raise RateLimitError("Rate limit dari server (HTTP 429)")
 
     try:
         resp.raise_for_status()
@@ -150,278 +179,361 @@ def gql(query: str, variables: dict = None) -> dict:
     body = resp.json()
 
     if "errors" in body:
-        raise RuntimeError(f"GraphQL error: {body['errors']}")
+        err_str = str(body["errors"])
+        if _RATE_LIMIT_RE.search(err_str):
+            raise RateLimitError(f"Rate limit dari GraphQL: {err_str}")
+        raise RuntimeError(f"GraphQL error: {err_str}")
 
     return body.get("data", {})
 
 
-def fetch_idr_balance() -> float:
-    """Return the current available IDR balance."""
-    # API shape: data.user.balances = [ { available: { amount, currency } }, ... ]
+def fetch_idr_balance(currency: str) -> float:
+    """Ambil saldo wallet dari API."""
     try:
         data     = gql(BALANCE_QUERY)
-        balances = data["user"]["balances"]   # list of { available: {...} }
+        balances = data["user"]["balances"]
     except (KeyError, TypeError) as exc:
-        raise RuntimeError(
-            f"Could not parse balance response from Stake API: {exc}\n"
-            "Check that your token is for the correct account."
-        ) from exc
+        raise RuntimeError(f"Gagal parse response saldo: {exc}") from exc
 
     for entry in balances:
         avail = entry.get("available", {})
-        if avail.get("currency", "").lower() == CURRENCY:
+        if avail.get("currency", "").lower() == currency:
             return float(avail["amount"])
 
     raise RuntimeError(
-        f"No {CURRENCY.upper()} wallet found on this account. "
-        "Make sure the account has an IDR balance."
+        f"Wallet {currency.upper()} tidak ditemukan di akun ini."
     )
 
 
-def fetch_current_balance() -> float:
-    """Fresh balance fetch — used when embedded balance is unavailable."""
-    return fetch_idr_balance()
-
-
-def extract_balance_from_roll(roll_data: dict) -> float | None:
-    """Pull the updated IDR balance embedded in the diceRoll response."""
-    # API shape: diceRoll.user.balances = [ { available: { amount, currency } }, ... ]
+def extract_balance_from_roll(roll_data: dict, currency: str) -> float | None:
+    """Ambil saldo terbaru yang ada di response diceRoll (hindari extra API call)."""
     try:
         balances = roll_data["diceRoll"]["user"]["balances"]
         for entry in balances:
             avail = entry.get("available", {})
-            if avail.get("currency", "").lower() == CURRENCY:
+            if avail.get("currency", "").lower() == currency:
                 return float(avail["amount"])
     except (KeyError, TypeError):
         pass
     return None
 
 
-def place_dice_bet(bet_amount: float, win_chance: float) -> dict:
+def place_dice_bet(bet_amount: float, win_chance: float, currency: str) -> dict:
     """
-    Place a single dice bet.
-    Uses Roll Over: win if result > target.
-    target = 100 - win_chance  (e.g. chance=5 → target=95)
+    Pasang satu bet dice.
+    Roll Over (above): menang jika result > target
+    target = 100 - win_chance  (e.g. chance=5% → target=95)
     """
-    target = round(100.0 - win_chance, 4)
+    target     = round(100.0 - win_chance, 4)
     identifier = str(uuid.uuid4())
-
-    variables = {
-        "amount":     round(bet_amount, 2),
-        "target":     target,
-        "condition":  "above",   # Roll Over
-        "currency":   CURRENCY,
+    variables  = {
+        "amount"    : round(bet_amount, 2),
+        "target"    : target,
+        "condition" : "above",
+        "currency"  : currency,
         "identifier": identifier,
     }
     return gql(DICE_MUTATION, variables)
 
 
-# ─────────────────────────────────────────────
-# STATE MACHINE
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+#  STATE MACHINE — strategi modulo-2 / modulo-3
+# ═══════════════════════════════════════════════════════════
 def on_win(state: dict) -> dict:
-    state["CURRENT_BET"]    = state["BASE_BET"]
-    state["CURRENT_CHANCE"] = state["BASE_CHANCE"]
-    state["STREAK_LOSS"]    = 0
-    print("  → Win registered. System state flushed to baseline.")
+    state["current_bet"]    = state["base_bet"]
+    state["current_chance"] = state["base_chance"]
+    state["streak_loss"]    = 0
+    log.info("WIN  → state di-reset ke baseline.")
     return state
 
 
 def on_loss(state: dict) -> dict:
-    state["STREAK_LOSS"] += 1
-    streak = state["STREAK_LOSS"]
+    state["streak_loss"] += 1
+    streak = state["streak_loss"]
 
-    # Modulo-2: expand win chance every 2 consecutive losses
+    # Modulo-2: naikkan win chance tiap 2 loss berturut-turut
     if streak % 2 == 0:
-        state["CURRENT_CHANCE"] = min(
-            state["CURRENT_CHANCE"] + 2.50,
-            state["MAX_CHANCE_CAP"]
+        state["current_chance"] = min(
+            state["current_chance"] + 2.50,
+            state["max_chance_cap"]
         )
 
-    # Modulo-3: geometric stake increase every 3 consecutive losses
+    # Modulo-3: compound bet tiap 3 loss berturut-turut
     if streak % 3 == 0:
-        state["CURRENT_BET"] *= 1.35
+        state["current_bet"] *= 1.35
 
     return state
 
 
-# ─────────────────────────────────────────────
-# GUARDRAILS (evaluated BEFORE each new bet)
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+#  GUARDRAILS — dicek SEBELUM setiap bet
+# ═══════════════════════════════════════════════════════════
 def apply_guardrails(state: dict) -> dict:
-    # 1. Circuit breaker — 15 consecutive losses
-    if state["STREAK_LOSS"] >= 15:
-        state["CURRENT_BET"]    = state["BASE_BET"]
-        state["CURRENT_CHANCE"] = state["BASE_CHANCE"]
-        state["STREAK_LOSS"]    = 0
-        print("  ⚠ Circuit Breaker Tripped at 15 Losses. Deficit absorbed. Baseline restored.")
+    # 1. Circuit breaker: 15 loss berturut-turut → reset semua
+    if state["streak_loss"] >= 15:
+        state["current_bet"]    = state["base_bet"]
+        state["current_chance"] = state["base_chance"]
+        state["streak_loss"]    = 0
+        log.warning("⚠  Circuit Breaker 15 Loss! State di-reset ke baseline.")
 
-    # 2. Anti-bust: bet > 10 % of remaining balance → halve it
-    #    FIX: guard against zero/negative balance to avoid dividing by 0 or
-    #         the guardrail never triggering on a near-busted account
-    if state["CURRENT_BALANCE"] > 0 and \
-            state["CURRENT_BET"] > state["CURRENT_BALANCE"] * 0.10:
-        state["CURRENT_BET"] *= 0.50
-        print("  ⚠ Risk mitigation triggered. Compounding IDR bet scaled down by 50%.")
+    # 2. Anti-bust: bet > 10% saldo → potong 50%
+    if state["current_balance"] > 0 and \
+            state["current_bet"] > state["current_balance"] * 0.10:
+        state["current_bet"] *= 0.50
+        log.warning("⚠  Anti-bust: bet > 10% saldo, dikurangi 50%.")
 
-    # 3. Take-profit / stop-loss
-    net           = state["CURRENT_BALANCE"] - state["INITIAL_BALANCE"]
-    tp_threshold  =  state["INITIAL_BALANCE"] * (state["TARGET_PROFIT_PCT"] / 100)
-    sl_threshold  = -state["INITIAL_BALANCE"] * (state["STOP_LOSS_PCT"]     / 100)
+    # 3. Take-profit / Stop-loss per sesi
+    net          = state["current_balance"] - state["session_start_balance"]
+    tp_threshold =  state["session_start_balance"] * (state["target_profit_pct"] / 100)
+    sl_threshold = -state["session_start_balance"] * (state["stop_loss_pct"]     / 100)
 
     if net >= tp_threshold:
-        print(f"\n✅ Target Profit Reached Successfully in IDR. Net: {net:+.2f} IDR")
-        _terminate(state, "Target Profit Reached Successfully in IDR.")
-
-    if net <= sl_threshold:
-        print(f"\n🛑 Hard Stop-Loss Triggered. Protecting remaining IDR assets. Net: {net:+.2f} IDR")
-        _terminate(state, "Hard Stop-Loss Triggered. Protecting remaining IDR assets.")
+        state["session_end_reason"] = "TAKE_PROFIT"
+        state["session_active"]     = False
+    elif net <= sl_threshold:
+        state["session_end_reason"] = "STOP_LOSS"
+        state["session_active"]     = False
 
     return state
 
 
-def _terminate(state: dict, reason: str):
-    """Print session summary and exit cleanly."""
-    print(f"\n{'='*60}")
-    print(f"  SESSION TERMINATED: {reason}")
-    print(f"  Total Rolls  : {state['ROLL_COUNT']}")
-    print(f"  Final Balance: {state['CURRENT_BALANCE']:.2f} IDR")
-    net = state["CURRENT_BALANCE"] - state["INITIAL_BALANCE"]
-    print(f"  Net P&L      : {net:+.2f} IDR")
-    print(f"{'='*60}\n")
-    sys.exit(0)
-
-
-# ─────────────────────────────────────────────
-# TELEMETRY
-# ─────────────────────────────────────────────
-def log_roll(state: dict, result: str):
-    net    = state["CURRENT_BALANCE"] - state["INITIAL_BALANCE"]
-    payout = round(99 / state["CURRENT_CHANCE"], 4)
-    print(
-        f"[Roll #{state['ROLL_COUNT']:>5}] | "
-        f"Result: {result} | "
-        f"Chance: {state['CURRENT_CHANCE']:.2f}% | "
-        f"Payout: {payout:.4f}x | "
-        f"Bet: {state['CURRENT_BET']:.2f} IDR | "
-        f"Streak: {state['STREAK_LOSS']} | "
-        f"Net: {net:+.2f} IDR"
+# ═══════════════════════════════════════════════════════════
+#  TELEMETRY — log tiap roll
+# ═══════════════════════════════════════════════════════════
+def log_roll(state: dict, result: str, roll_num: int):
+    net    = state["current_balance"] - state["session_start_balance"]
+    payout = round(99 / state["current_chance"], 4)
+    log.info(
+        f"[#{roll_num:>5}] {result} | "
+        f"Chance:{state['current_chance']:>5.2f}% | "
+        f"Payout:{payout:.4f}x | "
+        f"Bet:{state['current_bet']:>10.2f} IDR | "
+        f"Streak:{state['streak_loss']:>2} | "
+        f"Net:{net:>+10.2f} IDR"
     )
 
 
-# ─────────────────────────────────────────────
-# MAIN LOOP
-# ─────────────────────────────────────────────
-def main():
-    print("=" * 60)
-    print("  Stake Dice Bot — IDR Mode")
-    print("=" * 60)
+# ═══════════════════════════════════════════════════════════
+#  SESSION SUMMARY
+# ═══════════════════════════════════════════════════════════
+def print_session_summary(session_num: int, state: dict, cum: dict):
+    net = state["current_balance"] - state["session_start_balance"]
+    reason = state.get("session_end_reason", "MANUAL_STOP")
+    sep = "═" * 60
+    log.info(sep)
+    log.info(f"  SESI #{session_num} SELESAI — {reason}")
+    log.info(f"  Roll sesi     : {state['roll_count']}")
+    log.info(f"  Saldo awal    : Rp {state['session_start_balance']:>12,.2f}")
+    log.info(f"  Saldo akhir   : Rp {state['current_balance']:>12,.2f}")
+    log.info(f"  Net sesi      : Rp {net:>+12,.2f}")
+    log.info(sep)
+    log.info(f"  KUMULATIF {cum['sessions']} SESI")
+    log.info(f"  Total roll    : {cum['total_rolls']}")
+    log.info(f"  Total net     : Rp {cum['total_net']:>+12,.2f}")
+    log.info(f"  Win rate      : {cum['wins']}/{cum['wins']+cum['losses']} "
+             f"({100*cum['wins']/max(cum['wins']+cum['losses'],1):.1f}%)")
+    log.info(sep)
 
-    # ── Initialisation ──────────────────────────────────────────
-    print("\n[INIT] Fetching IDR balance...")
-    initial_balance = fetch_idr_balance()
-    print(f"[INIT] Initial IDR balance: {initial_balance:.2f} IDR")
 
-    state = {
-        # Config (immutable references)
-        "BASE_BET":          BASE_BET,
-        "BASE_CHANCE":       BASE_CHANCE,
-        "MAX_CHANCE_CAP":    MAX_CHANCE_CAP,
-        "TARGET_PROFIT_PCT": TARGET_PROFIT_PCT,
-        "STOP_LOSS_PCT":     STOP_LOSS_PCT,
-        # Dynamic state
-        "INITIAL_BALANCE":   initial_balance,
-        "CURRENT_BALANCE":   initial_balance,
-        "CURRENT_BET":       BASE_BET,
-        "CURRENT_CHANCE":    BASE_CHANCE,
-        "STREAK_LOSS":       0,
-        "ROLL_COUNT":        0,
+# ═══════════════════════════════════════════════════════════
+#  MAIN
+# ═══════════════════════════════════════════════════════════
+def new_session_state(cfg: dict, balance: float) -> dict:
+    return {
+        # Config snapshot untuk sesi ini
+        "base_bet"            : cfg["base_bet"],
+        "base_chance"         : cfg["base_chance"],
+        "max_chance_cap"      : cfg["max_chance_cap"],
+        "target_profit_pct"   : cfg["target_profit_pct"],
+        "stop_loss_pct"       : cfg["stop_loss_pct"],
+        # Dynamic
+        "session_start_balance": balance,
+        "current_balance"     : balance,
+        "current_bet"         : cfg["base_bet"],
+        "current_chance"      : cfg["base_chance"],
+        "streak_loss"         : 0,
+        "roll_count"          : 0,
+        "session_active"      : True,
+        "session_end_reason"  : None,
     }
 
-    print(f"\n[CONFIG] Base bet    : {BASE_BET:.2f} IDR")
-    print(f"[CONFIG] Base chance : {BASE_CHANCE:.2f}%")
-    print(f"[CONFIG] Take-profit : +{TARGET_PROFIT_PCT:.1f}%  ({initial_balance * TARGET_PROFIT_PCT / 100:.2f} IDR)")
-    print(f"[CONFIG] Stop-loss   : -{STOP_LOSS_PCT:.1f}%  ({initial_balance * STOP_LOSS_PCT / 100:.2f} IDR)")
-    print("\n[RUNNING] Starting roll loop. Press Ctrl+C to stop.\n")
 
-    # ── Roll Loop ────────────────────────────────────────────────
-    consecutive_errors = 0
+def main():
+    sep = "═" * 60
+    log.info(sep)
+    log.info("  Stake Dice Bot — IDR Mode")
+    log.info(f"  Log file: {LOG_FILE}")
+    log.info(sep)
+
+    # ── Kumulatif lintas sesi ────────────────────────────────
+    cum = {
+        "sessions"   : 0,
+        "total_rolls": 0,
+        "total_net"  : 0.0,
+        "wins"       : 0,
+        "losses"     : 0,
+    }
+
+    session_num = 0
 
     try:
         while True:
-            # Guardrails before each bet
-            state = apply_guardrails(state)
+            # ── Load / reload config tiap sesi baru ─────────
+            cfg = load_config()
 
-            state["ROLL_COUNT"] += 1
+            # ── Fetch saldo awal sesi ────────────────────────
+            log.info("Mengambil saldo IDR...")
             try:
-                roll_data = place_dice_bet(state["CURRENT_BET"], state["CURRENT_CHANCE"])
-                consecutive_errors = 0  # reset on success
-            except RuntimeError as exc:
-                consecutive_errors += 1
-                # FIX: cap retries — abort after MAX_API_RETRIES consecutive failures
-                print(f"  [API ERROR #{consecutive_errors}/{MAX_API_RETRIES}] {exc} — retrying in 3 s…")
-                if consecutive_errors >= MAX_API_RETRIES:
-                    print(f"\n[FATAL] {MAX_API_RETRIES} consecutive API failures. Aborting to protect balance.")
-                    _terminate(state, f"Aborted after {MAX_API_RETRIES} consecutive API errors.")
-                time.sleep(3)
-                state["ROLL_COUNT"] -= 1  # don't count failed requests
-                continue
+                balance = fetch_idr_balance(cfg["currency"])
+            except Exception as exc:
+                log.error(f"Gagal ambil saldo: {exc}")
+                sys.exit(1)
 
-            dice = roll_data.get("diceRoll")
+            session_num += 1
+            cum["sessions"] = session_num
+            state = new_session_state(cfg, balance)
 
-            # FIX: if diceRoll key is missing entirely, treat as an API error
-            # (don't silently count it as a loss and compound the bet)
-            if not dice:
-                consecutive_errors += 1
-                print(f"  [API ERROR #{consecutive_errors}/{MAX_API_RETRIES}] Empty diceRoll in response — retrying in 3 s…")
-                if consecutive_errors >= MAX_API_RETRIES:
-                    print(f"\n[FATAL] {MAX_API_RETRIES} consecutive empty responses. Aborting.")
-                    _terminate(state, f"Aborted after {MAX_API_RETRIES} consecutive empty API responses.")
-                time.sleep(3)
-                state["ROLL_COUNT"] -= 1
-                continue
+            log.info(sep)
+            log.info(f"  SESI #{session_num} DIMULAI")
+            log.info(f"  Saldo       : Rp {balance:>12,.2f}")
+            log.info(f"  Base bet    : Rp {cfg['base_bet']:>12,.2f}")
+            log.info(f"  Win chance  : {cfg['base_chance']:.2f}%")
+            log.info(f"  Take-profit : +{cfg['target_profit_pct']:.1f}%  "
+                     f"(Rp {balance * cfg['target_profit_pct']/100:,.2f})")
+            log.info(f"  Stop-loss   : -{cfg['stop_loss_pct']:.1f}%  "
+                     f"(Rp {balance * cfg['stop_loss_pct']/100:,.2f})")
+            if cfg["max_sessions"] > 0:
+                log.info(f"  Sesi        : {session_num}/{cfg['max_sessions']}")
+            log.info(sep)
 
-            result_val = dice.get("result")
-            target_val = dice.get("target")
+            consecutive_errors = 0
 
-            # FIX: determine win/loss only from result vs target (Roll Over = above)
-            # Removed the payout fallback — if result is absent, treat as API error
-            if result_val is None or target_val is None:
-                consecutive_errors += 1
-                print(f"  [API ERROR #{consecutive_errors}/{MAX_API_RETRIES}] Missing result/target in response — retrying in 3 s…")
-                if consecutive_errors >= MAX_API_RETRIES:
-                    _terminate(state, f"Aborted after {MAX_API_RETRIES} consecutive malformed responses.")
-                time.sleep(3)
-                state["ROLL_COUNT"] -= 1
-                continue
+            # ── Roll loop ────────────────────────────────────
+            while state["session_active"]:
+                state = apply_guardrails(state)
+                if not state["session_active"]:
+                    break
 
-            won = float(result_val) > float(target_val)
+                state["roll_count"] += 1
+                roll_num_global = cum["total_rolls"] + state["roll_count"]
 
-            # Update balance from embedded response (avoids an extra API call)
-            new_bal = extract_balance_from_roll(roll_data)
-            if new_bal is not None:
-                state["CURRENT_BALANCE"] = new_bal
-            else:
-                # FIX: if balance isn't in the roll response, fetch it explicitly
-                # so anti-bust guardrail always works with current data
+                # ── Pasang bet ───────────────────────────────
                 try:
-                    state["CURRENT_BALANCE"] = fetch_current_balance()
-                except RuntimeError:
-                    pass  # keep last known balance; guardrail will still apply
+                    roll_data = place_dice_bet(
+                        state["current_bet"],
+                        state["current_chance"],
+                        cfg["currency"]
+                    )
+                    consecutive_errors = 0
 
-            if won:
-                log_roll(state, " W ")
-                state = on_win(state)
+                except RateLimitError as exc:
+                    state["roll_count"] -= 1
+                    log.warning(f"Rate limit — tunggu 5 detik... ({exc})")
+                    time.sleep(5)
+                    continue
+
+                except AuthError as exc:
+                    log.error(str(exc))
+                    log.error("Update token dengan: ./update_token.sh lalu restart bot.")
+                    sys.exit(1)
+
+                except RuntimeError as exc:
+                    consecutive_errors += 1
+                    state["roll_count"] -= 1
+                    max_r = cfg["max_api_retries"]
+                    log.warning(f"API error #{consecutive_errors}/{max_r}: {exc} — retry 3 detik...")
+                    if consecutive_errors >= max_r:
+                        log.error(f"{max_r} error berturut-turut. Bot berhenti.")
+                        state["session_end_reason"] = "API_ERROR"
+                        state["session_active"]     = False
+                    else:
+                        time.sleep(3)
+                    continue
+
+                # ── Validasi response ────────────────────────
+                dice = roll_data.get("diceRoll")
+                if not dice:
+                    consecutive_errors += 1
+                    state["roll_count"] -= 1
+                    log.warning(f"Response kosong #{consecutive_errors} — retry 3 detik...")
+                    if consecutive_errors >= cfg["max_api_retries"]:
+                        state["session_end_reason"] = "API_ERROR"
+                        state["session_active"]     = False
+                    else:
+                        time.sleep(3)
+                    continue
+
+                result_val = dice.get("result")
+                target_val = dice.get("target")
+                if result_val is None or target_val is None:
+                    consecutive_errors += 1
+                    state["roll_count"] -= 1
+                    log.warning(f"Data roll tidak lengkap #{consecutive_errors} — retry 3 detik...")
+                    if consecutive_errors >= cfg["max_api_retries"]:
+                        state["session_end_reason"] = "API_ERROR"
+                        state["session_active"]     = False
+                    else:
+                        time.sleep(3)
+                    continue
+
+                # ── Update saldo ─────────────────────────────
+                new_bal = extract_balance_from_roll(roll_data, cfg["currency"])
+                if new_bal is not None:
+                    state["current_balance"] = new_bal
+                else:
+                    try:
+                        state["current_balance"] = fetch_idr_balance(cfg["currency"])
+                    except RuntimeError:
+                        pass
+
+                # ── Evaluasi hasil roll ──────────────────────
+                won = float(result_val) > float(target_val)
+                log_roll(state, "WIN " if won else "LOSS", roll_num_global)
+
+                if won:
+                    cum["wins"] += 1
+                    state = on_win(state)
+                else:
+                    cum["losses"] += 1
+                    state = on_loss(state)
+
+                # ── Delay antar roll ─────────────────────────
+                delay = cfg["roll_delay_ms"] / 1000.0
+                if delay > 0:
+                    time.sleep(delay)
+
+            # ── Sesi selesai ─────────────────────────────────
+            cum["total_rolls"] += state["roll_count"]
+            cum["total_net"]   += state["current_balance"] - state["session_start_balance"]
+            print_session_summary(session_num, state, cum)
+
+            reason = state.get("session_end_reason", "")
+
+            # Berhenti total jika API error atau manual stop
+            if reason == "API_ERROR":
+                log.error("Bot berhenti karena error API berulang.")
+                break
+
+            # Cek batas maksimal sesi
+            if cfg["max_sessions"] > 0 and session_num >= cfg["max_sessions"]:
+                log.info(f"Batas {cfg['max_sessions']} sesi tercapai. Bot selesai.")
+                break
+
+            # Auto-restart sesi berikutnya
+            if cfg["auto_restart_session"]:
+                log.info("Auto-restart sesi baru dalam 3 detik... (Ctrl+C untuk berhenti)")
+                time.sleep(3)
             else:
-                log_roll(state, " L ")
-                state = on_loss(state)
-
-            if ROLL_DELAY > 0:
-                time.sleep(ROLL_DELAY)
+                log.info("auto_restart_session = false. Bot selesai.")
+                break
 
     except KeyboardInterrupt:
-        print("\n\n[STOPPED] Manual interrupt.")
-        _terminate(state, "Manually stopped by user.")
+        log.info("\nBot dihentikan manual (Ctrl+C).")
+        log.info(f"Total sesi  : {cum['sessions']}")
+        log.info(f"Total roll  : {cum['total_rolls']}")
+        log.info(f"Total net   : Rp {cum['total_net']:>+,.2f}")
+        log.info(f"Win rate    : {cum['wins']}/{cum['wins']+cum['losses']} "
+                 f"({100*cum['wins']/max(cum['wins']+cum['losses'],1):.1f}%)")
 
 
 if __name__ == "__main__":
