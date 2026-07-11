@@ -5,13 +5,13 @@
 
   "base_bet"            : 100.0,
   "base_chance"         : 5.0,
-  "max_chance_cap"      : 40.0,
+  "max_chance_cap"      : 49.5,
 
-  "target_profit_pct"   : 20.0,
-  "stop_loss_pct"       : 8.0,
+  "target_profit_pct"   : 15.0,
+  "stop_loss_pct"       : 10.0,
   "bet_multiplier"      : 1.50,
-  "max_bet_multiplier"  : 50,
-  "circuit_breaker_at"  : 10,
+  "max_bet_multiplier"  : 100,
+  "circuit_breaker_at"  : 8,
 
   "roll_delay_ms"       : 500,
   "max_api_retries"     : 10,
@@ -20,17 +20,17 @@
   "max_sessions"        : 0,
 
   "_notes": {
-    "base_bet"           : "Bet awal tiap sesi dalam IDR",
-    "base_chance"        : "Win chance awal (%) — 5 berarti 5%",
-    "max_chance_cap"     : "Batas atas win chance saat losing streak",
-    "target_profit_pct"  : "Sesi berhenti saat profit >= X% dari saldo awal sesi",
-    "stop_loss_pct"      : "Sesi berhenti saat loss >= X% — dibuat kecil agar rugi cepat dipotong",
-    "bet_multiplier"     : "Pengali bet tiap 3 loss berturut-turut (1.50 = naik 50%)",
-    "max_bet_multiplier" : "Batas atas bet = base_bet × max_bet_multiplier (mis. 50 = maks Rp5000)",
-    "circuit_breaker_at" : "Reset bet+chance saat streak loss mencapai angka ini",
-    "roll_delay_ms"      : "Jeda antar roll dalam milidetik (0 = secepat mungkin)",
-    "max_api_retries"    : "Batas error API berturut-turut sebelum bot berhenti total",
+    "base_bet"            : "Bet awal tiap siklus dalam IDR",
+    "base_chance"         : "Win chance awal (%) — 5 berarti 5% (payout 19.8x)",
+    "max_chance_cap"      : "Batas atas win chance (49.5% = payout ~2x, aman untuk recovery)",
+    "target_profit_pct"   : "Sesi berhenti saat profit >= X% dari saldo awal sesi",
+    "stop_loss_pct"       : "Sesi berhenti saat loss >= X% dari saldo awal sesi",
+    "bet_multiplier"      : "Tidak dipakai lagi (diganti True Martingale sizing otomatis)",
+    "max_bet_multiplier"  : "Hard cap bet = base_bet × nilai ini (100 = maks Rp10.000)",
+    "circuit_breaker_at"  : "Reset siklus saat streak loss mencapai angka ini (lebih kecil = lebih aman)",
+    "roll_delay_ms"       : "Jeda antar roll dalam milidetik",
+    "max_api_retries"     : "Batas error API berturut-turut sebelum bot berhenti total",
     "auto_restart_session": "true = mulai sesi baru otomatis setelah TP/SL tercapai",
-    "max_sessions"       : "0 = tidak terbatas; 3 = berhenti setelah 3 sesi"
+    "max_sessions"        : "0 = tidak terbatas; 3 = berhenti setelah 3 sesi"
   }
 }

@@ -245,12 +245,13 @@ def on_win(state: dict) -> dict:
     state["current_bet"]    = state["base_bet"]
     state["current_chance"] = state["base_chance"]
     state["streak_loss"]    = 0
-    log.info("WIN  → state di-reset ke baseline.")
+    state["cycle_spent"]    = 0.0   # reset akumulasi kerugian siklus
     return state
 
 
-def on_loss(state: dict) -> dict:
-    state["streak_loss"] += 1
+def on_loss(state: dict, bet_placed: float) -> dict:
+    state["streak_loss"]  += 1
+    state["cycle_spent"]  += bet_placed
     streak = state["streak_loss"]
 
     # Modulo-2: naikkan win chance tiap 2 loss berturut-turut
@@ -260,13 +261,13 @@ def on_loss(state: dict) -> dict:
             state["max_chance_cap"]
         )
 
-    # Modulo-3: compound bet ×bet_multiplier, dibatasi hard cap
-    if streak % 3 == 0:
-        max_bet = state["base_bet"] * state["max_bet_multiplier"]
-        state["current_bet"] = min(
-            round(state["current_bet"] * state["bet_multiplier"], 2),
-            max_bet
-        )
+    # True Martingale: bet berikutnya dihitung agar 1 WIN menutup
+    # semua kerugian siklus ini + profit 1× base_bet.
+    # Formula: bet = (total_spent + base_profit) / (payout_mult - 1)
+    payout_mult  = 99.0 / state["current_chance"]
+    recovery_bet = (state["cycle_spent"] + state["base_bet"]) / (payout_mult - 1.0)
+    max_bet      = state["base_bet"] * state["max_bet_multiplier"]
+    state["current_bet"] = min(round(recovery_bet, 2), max_bet)
 
     return state
 
@@ -277,11 +278,12 @@ def on_loss(state: dict) -> dict:
 def apply_guardrails(state: dict) -> dict:
     # 1. Circuit breaker: reset penuh saat streak mencapai batas
     if state["streak_loss"] >= state["circuit_breaker_at"]:
+        log.warning(f"⚠  Circuit Breaker ({state['circuit_breaker_at']} loss)! "
+                    f"Defisit siklus Rp {state['cycle_spent']:,.2f} — reset ke baseline.")
         state["current_bet"]    = state["base_bet"]
         state["current_chance"] = state["base_chance"]
         state["streak_loss"]    = 0
-        log.warning(f"⚠  Circuit Breaker ({state['circuit_breaker_at']} loss)! "
-                    f"State di-reset ke baseline.")
+        state["cycle_spent"]    = 0.0   # terima rugi siklus, mulai ulang
 
     # 2. Anti-bust: bet > 10% saldo → potong 50%
     if state["current_balance"] > 0 and \
@@ -307,14 +309,17 @@ def apply_guardrails(state: dict) -> dict:
 # ═══════════════════════════════════════════════════════════
 #  TELEMETRY — log tiap roll
 # ═══════════════════════════════════════════════════════════
-def log_roll(state: dict, result: str, roll_num: int):
+def log_roll(state: dict, result: str, roll_num: int,
+             bet_used: float, chance_used: float):
+    """Log satu roll. bet_used & chance_used adalah nilai SEBELUM update state,
+    sehingga data yang tercatat adalah apa yang benar-benar dipakai untuk bet ini."""
     net    = state["current_balance"] - state["session_start_balance"]
-    payout = round(99 / state["current_chance"], 4)
+    payout = round(99 / chance_used, 4)
     log.info(
         f"[#{roll_num:>5}] {result} | "
-        f"Chance:{state['current_chance']:>5.2f}% | "
+        f"Chance:{chance_used:>5.2f}% | "
         f"Payout:{payout:.4f}x | "
-        f"Bet:{state['current_bet']:>10.2f} IDR | "
+        f"Bet:{bet_used:>10.2f} IDR | "
         f"Streak:{state['streak_loss']:>2} | "
         f"Net:{net:>+10.2f} IDR"
     )
@@ -362,6 +367,7 @@ def new_session_state(cfg: dict, balance: float) -> dict:
         "current_bet"         : cfg["base_bet"],
         "current_chance"      : cfg["base_chance"],
         "streak_loss"         : 0,
+        "cycle_spent"         : 0.0,   # total bet dikeluarkan sejak terakhir WIN/CB
         "roll_count"          : 0,
         "session_active"      : True,
         "session_end_reason"  : None,
@@ -484,17 +490,20 @@ def main():
                         pass
 
                 # ── Evaluasi hasil roll ──────────────────────
-                # Menang jika payout > 0 (payout=0 berarti kalah)
-                # State diupdate DULU, baru log — supaya Streak di log
-                # mencerminkan nilai yang sudah benar setelah roll ini.
+                # Snapshot bet & chance yang BENAR-BENAR dipakai untuk roll ini,
+                # sebelum state diupdate — agar log mencerminkan data akurat.
+                bet_used    = state["current_bet"]
+                chance_used = state["current_chance"]
+
                 won = float(dice.get("payout", 0)) > 0
                 if won:
                     cum["wins"] += 1
                     state = on_win(state)
                 else:
                     cum["losses"] += 1
-                    state = on_loss(state)
-                log_roll(state, "WIN " if won else "LOSS", roll_num_global)
+                    state = on_loss(state, bet_used)
+                log_roll(state, "WIN " if won else "LOSS", roll_num_global,
+                         bet_used, chance_used)
 
                 # ── Delay antar roll ─────────────────────────
                 delay = cfg["roll_delay_ms"] / 1000.0
