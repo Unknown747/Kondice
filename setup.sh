@@ -130,7 +130,7 @@ chmod 600 "${TOKEN_HEADER_FILE}"
 printf 'x-access-token: %s' "${TOKEN}" > "${TOKEN_HEADER_FILE}"
 
 HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-    -X POST "https://api.stake.com/graphql" \
+    -X POST "https://stake.com/graphql" \
     -H "Content-Type: application/json" \
     -H "@${TOKEN_HEADER_FILE}" \
     --data '{"query":"{ user { id name } }"}' \

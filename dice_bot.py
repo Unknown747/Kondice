@@ -14,7 +14,7 @@ from requests.exceptions import HTTPError
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
-API_ENDPOINT = "https://api.stake.com/graphql"
+API_ENDPOINT = "https://stake.com/graphql"
 CURRENCY     = "idr"
 
 BASE_BET          = 100.00
