@@ -51,6 +51,7 @@ def run_session(cfg: dict, start_balance: float, target_spins: int, rng: random.
     cb_count     = 0
     wins = losses = 0
     spins_done   = 0
+    total_wager  = 0.0
     end_reason   = "SPIN_TARGET"
 
     for _ in range(target_spins):
@@ -78,6 +79,7 @@ def run_session(cfg: dict, start_balance: float, target_spins: int, rng: random.
             break
 
         spins_done += 1
+        total_wager += bet
         won = rng.random() < (base_chance / 100.0)
 
         if won:
@@ -110,6 +112,7 @@ def run_session(cfg: dict, start_balance: float, target_spins: int, rng: random.
         "losses": losses,
         "cb_count": cb_count,
         "max_drawdown": max_drawdown,
+        "total_wager": total_wager,
         "end_reason": end_reason,
     }
 
@@ -121,10 +124,13 @@ def main():
     ap.add_argument("--spins-jitter", type=int, default=150,
                     help="+/- random jitter around --spins to mimic 'rata-rata N spin per sesi'")
     ap.add_argument("--balance", type=float, default=700_000.0)
+    ap.add_argument("--base-bet", type=float, default=None, help="override cfg base_bet for this run")
     ap.add_argument("--seed", type=int, default=None)
     args = ap.parse_args()
 
     cfg = load_cfg()
+    if args.base_bet is not None:
+        cfg["base_bet"] = args.base_bet
     rng = random.Random(args.seed)
 
     results = []
@@ -139,6 +145,9 @@ def main():
     drawdowns      = [r["max_drawdown"] for r in results]
     total_wins     = sum(r["wins"] for r in results)
     total_losses   = sum(r["losses"] for r in results)
+    total_wager    = sum(r["total_wager"] for r in results)
+    total_rolls    = total_wins + total_losses
+    avg_bet_per_roll = total_wager / max(total_rolls, 1)
     busted         = sum(1 for r in results if r["end_reason"] == "BUSTED")
     hard_stopped   = sum(1 for r in results if r["end_reason"] == "HARD_STOP")
     max_cb_hit     = sum(1 for r in results if r["end_reason"] == "MAX_CB_SESSION")
@@ -152,7 +161,8 @@ def main():
           f"mult={cfg['bet_multiplier']}  CB@{cfg['circuit_breaker_at']}  "
           f"hard_stop=Rp{cfg.get('hard_stop_balance',0):,.0f}  max_cb/sesi={cfg.get('max_cb_per_session',0)}")
     print("-" * 64)
-    print(f"  Total roll         : {total_wins + total_losses:,}  (WR {100*total_wins/max(total_wins+total_losses,1):.2f}%)")
+    print(f"  Total roll         : {total_rolls:,}  (WR {100*total_wins/max(total_rolls,1):.2f}%)")
+    print(f"  Total wager        : Rp {total_wager:,.0f}  |  Rata2 bet/roll: Rp {avg_bet_per_roll:,.2f}")
     print(f"  Sesi profit        : {profitable}/{args.sessions} ({100*profitable/args.sessions:.1f}%)")
     print(f"  Sesi capai target spin (tidak kena rem): {reached_target}/{args.sessions}")
     print(f"  Sesi kena HARD_STOP (saldo <= Rp{cfg.get('hard_stop_balance',0):,.0f}): {hard_stopped}/{args.sessions}")
