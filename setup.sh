@@ -27,8 +27,8 @@ fi
 info "Update package list..."
 sudo apt-get update -qq
 
-info "Install Python3, pip, venv, screen, curl..."
-sudo apt-get install -y -qq python3 python3-pip python3-venv screen curl
+info "Install Python3, pip, screen, curl..."
+sudo apt-get install -y -qq python3 python3-pip screen curl
 ok "Paket sistem siap."
 
 # ── 2. Copy file bot ─────────────────────────────────────────
@@ -43,27 +43,12 @@ for FILE in dice_bot.py scheduler.py config.json; do
     fi
 done
 
-# ── 3. Virtual environment + requests ────────────────────────
-VENV_DIR="${SCRIPT_DIR}/venv"
-
-if [[ -d "${VENV_DIR}" ]]; then
-    info "Venv sudah ada, skip buat baru."
-else
-    info "Membuat virtual environment..."
-    python3 -m venv "${VENV_DIR}"
-fi
-
-info "Upgrade pip..."
-"${VENV_DIR}/bin/python" -m pip install --upgrade pip \
-    --timeout 30 --retries 3 --no-cache-dir \
-    2>&1 | grep -v "^Requirement already"
-
+# ── 3. Install requests ───────────────────────────────────────
 info "Install requests..."
-"${VENV_DIR}/bin/pip" install requests \
-    --timeout 30 --retries 3 --no-cache-dir \
+pip3 install requests \
+    --timeout 30 --retries 3 \
     2>&1 | grep -v "^Requirement already"
-
-ok "Virtual environment siap: ${VENV_DIR}"
+ok "requests siap."
 
 # ── 4. API Token ─────────────────────────────────────────────
 ENV_FILE="${SCRIPT_DIR}/.env"
@@ -118,13 +103,13 @@ echo -e "${BOLD}${GREEN}  Setup selesai!${RESET}"
 echo -e "${BOLD}${CYAN}══════════════════════════════════════════${RESET}"
 echo
 echo -e "  Jalankan scheduler (30 mnt jalan / 10 mnt jeda):"
-echo -e "  ${BOLD}${VENV_DIR}/bin/python scheduler.py${RESET}"
+echo -e "  ${BOLD}python3 scheduler.py${RESET}"
 echo
 echo -e "  Atau langsung botnya saja:"
-echo -e "  ${BOLD}${VENV_DIR}/bin/python dice_bot.py${RESET}"
+echo -e "  ${BOLD}python3 dice_bot.py${RESET}"
 echo
 echo -e "  Pakai screen biar aman saat SSH putus:"
 echo -e "  ${BOLD}screen -S bot${RESET}"
-echo -e "  ${BOLD}${VENV_DIR}/bin/python scheduler.py${RESET}"
+echo -e "  ${BOLD}python3 scheduler.py${RESET}"
 echo -e "  Ctrl+A lalu D untuk detach"
 echo
