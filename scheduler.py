@@ -241,6 +241,9 @@ def run_phase(cycle: int, stats: dict, wager_today: float) -> tuple[float, float
 
     print_run_header(cycle, start_dt.strftime("%H:%M:%S"), stop_dt.strftime("%H:%M:%S"))
 
+    # Reset ticker agar tidak miss 5-menit pertama siklus baru
+    stats["last_tick_run"] = -1
+
     # Snapshot VIP + wager SEBELUM run
     print(f"  [{now_str()}]  ⟳  Mengambil data VIP & wager awal...", flush=True)
     stats_before = fetch_stake_stats()
@@ -370,7 +373,9 @@ def pause_phase(cycle: int, stats: dict):
             time.sleep(1)
 
     finally:
-        stats["total_pause"] += PAUSE_MINUTES * 60
+        # Gunakan elapsed aktual, bukan fixed PAUSE_MINUTES (bisa di-Ctrl+C lebih awal)
+        actual_pause = time.monotonic() - start
+        stats["total_pause"] += actual_pause
 
     print(f"\r  ✅  Jeda selesai — {now_str()}{' ' * 35}", flush=True)
 

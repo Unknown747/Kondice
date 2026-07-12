@@ -32,6 +32,8 @@ def _setup_logger() -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S"
     )
     logger = logging.getLogger("test_bot")
+    if logger.handlers:
+        return logger
     logger.setLevel(logging.DEBUG)
 
     fh = RotatingFileHandler(LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=1, encoding="utf-8")
@@ -54,13 +56,13 @@ log = _setup_logger()
 _CONFIG_DEFAULTS = {
     "currency"            : "idr",
     "base_bet"            : 100.0,
-    "base_chance"         : 5.0,
-    "max_chance_cap"      : 40.0,
-    "target_profit_pct"   : 20.0,
-    "stop_loss_pct"       : 8.0,
-    "bet_multiplier"      : 1.50,
-    "max_bet_multiplier"  : 50,
-    "circuit_breaker_at"  : 10,
+    "base_chance"         : 40.0,   # FIXED — tidak naik saat streak
+    "max_chance_cap"      : 49.5,   # tidak aktif, disimpan untuk kompatibilitas config
+    "target_profit_pct"   : 3.0,
+    "stop_loss_pct"       : 5.0,
+    "bet_multiplier"      : 1.50,   # tidak aktif, disimpan untuk kompatibilitas config
+    "max_bet_multiplier"  : 100,
+    "circuit_breaker_at"  : 5,
     "roll_delay_ms"       : 500,
     "max_api_retries"     : 10,
     "auto_restart_session": True,
@@ -97,33 +99,26 @@ def simulate_roll(win_chance: float, rng: random.Random) -> tuple[float, float, 
     return result, target, won
 
 # ═══════════════════════════════════════════════════════════
-#  STATE MACHINE — IDENTIK dengan dice_bot.py
+#  STATE MACHINE — True Martingale, IDENTIK dengan dice_bot.py
 # ═══════════════════════════════════════════════════════════
 def on_win(state: dict) -> dict:
     state["current_bet"]    = state["base_bet"]
     state["current_chance"] = state["base_chance"]
     state["streak_loss"]    = 0
+    state["cycle_spent"]    = 0.0   # reset akumulasi kerugian siklus
     return state
 
 
-def on_loss(state: dict) -> dict:
-    state["streak_loss"] += 1
-    streak = state["streak_loss"]
+def on_loss(state: dict, bet_placed: float) -> dict:
+    state["streak_loss"]  += 1
+    state["cycle_spent"]  += bet_placed
 
-    # Modulo-2: naikkan win chance tiap 2 loss berturut-turut
-    if streak % 2 == 0:
-        state["current_chance"] = min(
-            state["current_chance"] + 2.50,
-            state["max_chance_cap"]
-        )
-
-    # Modulo-3: compound bet ×bet_multiplier, dibatasi hard cap
-    if streak % 3 == 0:
-        max_bet = state["base_bet"] * state["max_bet_multiplier"]
-        state["current_bet"] = min(
-            round(state["current_bet"] * state["bet_multiplier"], 2),
-            max_bet
-        )
+    # Chance TIDAK dinaikkan — fixed di base_chance agar payout stabil
+    # True Martingale: bet dihitung agar 1 WIN menutup semua rugi + 1× base_bet profit
+    payout_mult  = 99.0 / state["current_chance"]
+    recovery_bet = (state["cycle_spent"] + state["base_bet"]) / (payout_mult - 1.0)
+    max_bet      = state["base_bet"] * state["max_bet_multiplier"]
+    state["current_bet"] = min(round(recovery_bet, 2), max_bet)
 
     return state
 
@@ -133,11 +128,12 @@ def on_loss(state: dict) -> dict:
 def apply_guardrails(state: dict) -> dict:
     # 1. Circuit breaker: reset penuh saat streak mencapai batas
     if state["streak_loss"] >= state["circuit_breaker_at"]:
+        log.warning(f"⚠  Circuit Breaker ({state['circuit_breaker_at']} loss)! "
+                    f"Defisit siklus Rp {state['cycle_spent']:,.2f} — reset ke baseline.")
         state["current_bet"]    = state["base_bet"]
         state["current_chance"] = state["base_chance"]
         state["streak_loss"]    = 0
-        log.warning(f"⚠  Circuit Breaker ({state['circuit_breaker_at']} loss)! "
-                    f"State di-reset ke baseline.")
+        state["cycle_spent"]    = 0.0   # terima rugi siklus, mulai ulang
         state["sim"]["circuit_breaker_count"] += 1
 
     # 2. Anti-bust: bet > 10% saldo → potong 50%
@@ -165,14 +161,17 @@ def apply_guardrails(state: dict) -> dict:
 #  TELEMETRY — IDENTIK dengan dice_bot.py
 # ═══════════════════════════════════════════════════════════
 def log_roll(state: dict, result: str, roll_num: int,
+             bet_used: float, chance_used: float,
              dice_result: float, target: float):
+    """bet_used & chance_used adalah snapshot SEBELUM update state,
+    agar log mencerminkan nilai yang benar-benar dipakai untuk roll ini."""
     net    = state["current_balance"] - state["session_start_balance"]
-    payout = round(99 / state["current_chance"], 4)
+    payout = round(99 / chance_used, 4)
     log.info(
         f"[#{roll_num:>5}] {result} | "
-        f"Chance:{state['current_chance']:>5.2f}% | "
+        f"Chance:{chance_used:>5.2f}% | "
         f"Payout:{payout:.4f}x | "
-        f"Bet:{state['current_bet']:>10.2f} IDR | "
+        f"Bet:{bet_used:>10.2f} IDR | "
         f"Streak:{state['streak_loss']:>2} | "
         f"Net:{net:>+10.2f} IDR | "
         f"Roll:{dice_result:>6.2f}/Tgt:{target:.2f}"
@@ -185,10 +184,8 @@ def new_session_state(cfg: dict, balance: float) -> dict:
     return {
         "base_bet"             : cfg["base_bet"],
         "base_chance"          : cfg["base_chance"],
-        "max_chance_cap"       : cfg["max_chance_cap"],
         "target_profit_pct"    : cfg["target_profit_pct"],
         "stop_loss_pct"        : cfg["stop_loss_pct"],
-        "bet_multiplier"       : cfg["bet_multiplier"],
         "max_bet_multiplier"   : cfg["max_bet_multiplier"],
         "circuit_breaker_at"   : cfg["circuit_breaker_at"],
         "session_start_balance": balance,
@@ -196,6 +193,7 @@ def new_session_state(cfg: dict, balance: float) -> dict:
         "current_bet"          : cfg["base_bet"],
         "current_chance"       : cfg["base_chance"],
         "streak_loss"          : 0,
+        "cycle_spent"          : 0.0,   # akumulasi kerugian sejak WIN/CB terakhir
         "roll_count"           : 0,
         "session_active"       : True,
         "session_end_reason"   : None,
@@ -375,21 +373,23 @@ def main():
                 state["roll_count"] += 1
                 roll_num_global = cum["total_rolls"] + state["roll_count"]
 
+                # ── Snapshot SEBELUM update state ────────────
+                bet_used    = state["current_bet"]
+                chance_used = state["current_chance"]
+
                 # ── Simulasi roll ────────────────────────────
-                dice_result, target, won = simulate_roll(
-                    state["current_chance"], rng
-                )
+                dice_result, target, won = simulate_roll(chance_used, rng)
 
                 # ── Hitung saldo ─────────────────────────────
                 if won:
-                    payout_mult = 99.0 / state["current_chance"]
-                    profit      = state["current_bet"] * (payout_mult - 1)
+                    payout_mult = 99.0 / chance_used
+                    profit      = bet_used * (payout_mult - 1)
                     state["current_balance"] += profit
                 else:
-                    state["current_balance"] -= state["current_bet"]
+                    state["current_balance"] -= bet_used
 
                 # ── Tracking sim ─────────────────────────────
-                state["sim"]["max_bet"]     = max(state["sim"]["max_bet"],     state["current_bet"])
+                state["sim"]["max_bet"]     = max(state["sim"]["max_bet"],     bet_used)
                 state["sim"]["min_balance"] = min(state["sim"]["min_balance"], state["current_balance"])
                 state["sim"]["max_balance"] = max(state["sim"]["max_balance"], state["current_balance"])
 
@@ -399,13 +399,13 @@ def main():
                     state = on_win(state)
                 else:
                     cum["losses"] += 1
-                    state = on_loss(state)
+                    state = on_loss(state, bet_used)
                     state["sim"]["max_streak"] = max(
                         state["sim"]["max_streak"], state["streak_loss"]
                     )
 
                 log_roll(state, "WIN " if won else "LOSS",
-                         roll_num_global, dice_result, target)
+                         roll_num_global, bet_used, chance_used, dice_result, target)
 
                 if not args.fast and cfg["roll_delay_ms"] > 0:
                     time.sleep(cfg["roll_delay_ms"] / 1000.0)

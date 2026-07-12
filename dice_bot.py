@@ -1,6 +1,7 @@
 """
 Stake Dice Bot — IDR
-Strategi  : Modulo-2 chance scaling + Modulo-3 stake compounding
+Strategi  : True Martingale — chance fixed, bet dihitung ulang tiap loss
+            agar 1 WIN menutup semua kerugian siklus + 1× base_bet profit.
 Config    : config.json (hot-reload tiap sesi baru)
 Log       : dice_bot.log (auto-rotate 5 MB)
 """
@@ -28,6 +29,9 @@ def _setup_logger() -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S"
     )
     logger = logging.getLogger("dice_bot")
+    # Guard: jangan tambah handler ganda jika logger sudah ada (misal import ulang)
+    if logger.handlers:
+        return logger
     logger.setLevel(logging.DEBUG)
 
     # File handler — rotate at 5 MB, keep 1 backup
@@ -52,13 +56,13 @@ log = _setup_logger()
 _CONFIG_DEFAULTS = {
     "currency"            : "idr",
     "base_bet"            : 100.0,
-    "base_chance"         : 5.0,
-    "max_chance_cap"      : 40.0,
-    "target_profit_pct"   : 20.0,
-    "stop_loss_pct"       : 8.0,
-    "bet_multiplier"      : 1.50,
-    "max_bet_multiplier"  : 50,
-    "circuit_breaker_at"  : 10,
+    "base_chance"         : 40.0,   # chance FIXED — tidak naik saat streak
+    "max_chance_cap"      : 49.5,   # tidak aktif (chance fixed), disimpan untuk kompatibilitas
+    "target_profit_pct"   : 3.0,
+    "stop_loss_pct"       : 5.0,
+    "bet_multiplier"      : 1.50,   # tidak aktif (True Martingale), disimpan untuk kompatibilitas
+    "max_bet_multiplier"  : 100,
+    "circuit_breaker_at"  : 5,
     "roll_delay_ms"       : 500,
     "max_api_retries"     : 10,
     "auto_restart_session": True,
@@ -349,24 +353,22 @@ def print_session_summary(session_num: int, state: dict, cum: dict):
 def new_session_state(cfg: dict, balance: float) -> dict:
     return {
         # Config snapshot untuk sesi ini
-        "base_bet"            : cfg["base_bet"],
-        "base_chance"         : cfg["base_chance"],
-        "max_chance_cap"      : cfg["max_chance_cap"],
-        "target_profit_pct"   : cfg["target_profit_pct"],
-        "stop_loss_pct"       : cfg["stop_loss_pct"],
-        "bet_multiplier"      : cfg["bet_multiplier"],
-        "max_bet_multiplier"  : cfg["max_bet_multiplier"],
-        "circuit_breaker_at"  : cfg["circuit_breaker_at"],
+        "base_bet"             : cfg["base_bet"],
+        "base_chance"          : cfg["base_chance"],
+        "target_profit_pct"    : cfg["target_profit_pct"],
+        "stop_loss_pct"        : cfg["stop_loss_pct"],
+        "max_bet_multiplier"   : cfg["max_bet_multiplier"],
+        "circuit_breaker_at"   : cfg["circuit_breaker_at"],
         # Dynamic
         "session_start_balance": balance,
-        "current_balance"     : balance,
-        "current_bet"         : cfg["base_bet"],
-        "current_chance"      : cfg["base_chance"],
-        "streak_loss"         : 0,
-        "cycle_spent"         : 0.0,   # total bet dikeluarkan sejak terakhir WIN/CB
-        "roll_count"          : 0,
-        "session_active"      : True,
-        "session_end_reason"  : None,
+        "current_balance"      : balance,
+        "current_bet"          : cfg["base_bet"],
+        "current_chance"       : cfg["base_chance"],
+        "streak_loss"          : 0,
+        "cycle_spent"          : 0.0,   # akumulasi kerugian sejak WIN/CB terakhir
+        "roll_count"           : 0,
+        "session_active"       : True,
+        "session_end_reason"   : None,
     }
 
 
@@ -395,10 +397,16 @@ def main():
 
             # ── Fetch saldo awal sesi ────────────────────────
             log.info("Mengambil saldo IDR...")
-            try:
-                balance = fetch_idr_balance(cfg["currency"])
-            except Exception as exc:
-                log.error(f"Gagal ambil saldo: {exc}")
+            balance = None
+            for _attempt in range(3):
+                try:
+                    balance = fetch_idr_balance(cfg["currency"])
+                    break
+                except Exception as exc:
+                    log.warning(f"Gagal ambil saldo (percobaan {_attempt+1}/3): {exc} — retry 10 detik...")
+                    time.sleep(10)
+            if balance is None:
+                log.error("Gagal ambil saldo setelah 3 percobaan. Bot berhenti.")
                 sys.exit(1)
 
             session_num += 1
@@ -446,7 +454,7 @@ def main():
 
                 except AuthError as exc:
                     log.error(str(exc))
-                    log.error("Update token dengan: ./update_token.sh lalu restart bot.")
+                    log.error("Token tidak valid — perbarui STAKE_API_KEY lalu restart bot.")
                     sys.exit(1)
 
                 except RuntimeError as exc:
