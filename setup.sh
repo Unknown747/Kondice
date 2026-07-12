@@ -48,13 +48,15 @@ info "Setting up project directory: ${INSTALL_DIR}"
 mkdir -p "${INSTALL_DIR}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/dice_bot.py" ]]; then
-    cp "${SCRIPT_DIR}/dice_bot.py" "${INSTALL_DIR}/dice_bot.py"
-    ok "Copied dice_bot.py → ${INSTALL_DIR}"
-else
-    warn "dice_bot.py not found next to setup.sh."
-    warn "Please copy dice_bot.py to ${INSTALL_DIR} manually before running the bot."
-fi
+
+for FILE in dice_bot.py scheduler.py config.json; do
+    if [[ -f "${SCRIPT_DIR}/${FILE}" ]]; then
+        cp "${SCRIPT_DIR}/${FILE}" "${INSTALL_DIR}/${FILE}"
+        ok "Copied ${FILE} → ${INSTALL_DIR}"
+    else
+        warn "${FILE} not found next to setup.sh — copy manually to ${INSTALL_DIR}/"
+    fi
+done
 
 # ── 3. Python virtual environment ────────────────────────────
 # FIX: skip venv creation if it already exists (re-run safe)
@@ -159,34 +161,46 @@ case "${HTTP_STATUS}" in
     *)   warn "Stake API returned HTTP ${HTTP_STATUS}. Proceeding anyway." ;;
 esac
 
-# ── 6. Launch wrapper script ─────────────────────────────────
-LAUNCHER="${INSTALL_DIR}/run_bot.sh"
-cat > "${LAUNCHER}" <<'RUNSCRIPT'
-#!/usr/bin/env bash
-# run_bot.sh — loads .env and starts the dice bot
-set -euo pipefail
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# ── 6. Launch wrapper scripts ────────────────────────────────
 
-if [[ ! -f "${DIR}/.env" ]]; then
-    echo "[ERROR] .env file not found at ${DIR}/.env"
+# Fungsi untuk membuat launcher script
+make_launcher() {
+    local OUT="$1"
+    local SCRIPT="$2"
+    local LABEL="$3"
+    cat > "${OUT}" <<RUNSCRIPT
+#!/usr/bin/env bash
+# ${LABEL} — loads .env and starts the bot
+set -euo pipefail
+DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ ! -f "\${DIR}/.env" ]]; then
+    echo "[ERROR] .env file not found at \${DIR}/.env"
     echo "        Run setup.sh again or create the file manually."
     exit 1
 fi
 
 set -a
 # shellcheck disable=SC1091
-source "${DIR}/.env"
+source "\${DIR}/.env"
 set +a
 
-if [[ -z "${STAKE_API_KEY:-}" ]]; then
-    echo "[ERROR] STAKE_API_KEY is not set in ${DIR}/.env"
+if [[ -z "\${STAKE_API_KEY:-}" ]]; then
+    echo "[ERROR] STAKE_API_KEY is not set in \${DIR}/.env"
     exit 1
 fi
 
-exec "${DIR}/venv/bin/python" "${DIR}/dice_bot.py"
+exec "\${DIR}/venv/bin/python" "\${DIR}/${SCRIPT}"
 RUNSCRIPT
-chmod +x "${LAUNCHER}"
-ok "Launcher created: ${LAUNCHER}"
+    chmod +x "${OUT}"
+    ok "Launcher created: ${OUT}"
+}
+
+LAUNCHER="${INSTALL_DIR}/run_bot.sh"
+SCHEDULER_LAUNCHER="${INSTALL_DIR}/run_scheduler.sh"
+
+make_launcher "${LAUNCHER}"          "dice_bot.py"   "run_bot.sh"
+make_launcher "${SCHEDULER_LAUNCHER}" "scheduler.py"  "run_scheduler.sh"
 
 # ── 7. Systemd service (optional) ────────────────────────────
 banner "Service Setup (optional)"
@@ -198,7 +212,7 @@ if [[ "${INSTALL_SERVICE}" =~ ^[Yy]$ ]]; then
     # having both caused the token to be visible in 'systemctl show' output
     sudo tee "${SERVICE_FILE}" > /dev/null <<SERVICEFILE
 [Unit]
-Description=Stake Dice Bot (IDR)
+Description=Stake Dice Bot — Auto Scheduler (IDR)
 After=network-online.target
 Wants=network-online.target
 
@@ -206,7 +220,7 @@ Wants=network-online.target
 Type=simple
 User=${USER}
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${LAUNCHER}
+ExecStart=${SCHEDULER_LAUNCHER}
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
@@ -233,10 +247,11 @@ fi
 SCREEN_HELPER="${INSTALL_DIR}/start_screen.sh"
 cat > "${SCREEN_HELPER}" <<SCREENSCRIPT
 #!/usr/bin/env bash
-# Starts the bot inside a detached screen session so it keeps running
-# after you close SSH.  Use 'screen -r stake-bot' to reattach.
-screen -dmS stake-bot bash -c "${LAUNCHER}; exec bash"
-echo "Bot started in screen session 'stake-bot'."
+# Starts the AUTO-SCHEDULER inside a detached screen session so it keeps
+# running after you close SSH.  Use 'screen -r stake-bot' to reattach.
+DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+screen -dmS stake-bot bash -c "\${DIR}/run_scheduler.sh; exec bash"
+echo "Scheduler started in screen session 'stake-bot'."
 echo "Reattach with:  screen -r stake-bot"
 echo "Detach again :  Ctrl+A then D"
 SCREENSCRIPT
@@ -289,17 +304,20 @@ ok "Token updater created: ${UPDATE_TOKEN}"
 banner "Setup Complete"
 
 echo -e "  ${BOLD}Install directory :${RESET} ${INSTALL_DIR}"
-echo -e "  ${BOLD}Bot script        :${RESET} ${INSTALL_DIR}/dice_bot.py"
 echo -e "  ${BOLD}Token file        :${RESET} ${ENV_FILE}"
 echo
-echo -e "  ${BOLD}Run manually (foreground):${RESET}"
-echo -e "    cd ${INSTALL_DIR} && ./run_bot.sh"
+echo -e "  ${BOLD}▶  Jalankan scheduler (foreground):${RESET}"
+echo -e "    ${INSTALL_DIR}/run_scheduler.sh"
 echo
-echo -e "  ${BOLD}Run in background (screen):${RESET}"
+echo -e "  ${BOLD}▶  Jalankan bot langsung saja (foreground):${RESET}"
+echo -e "    ${INSTALL_DIR}/run_bot.sh"
+echo
+echo -e "  ${BOLD}▶  Jalankan di background (screen — tutup SSH aman):${RESET}"
 echo -e "    ${INSTALL_DIR}/start_screen.sh"
-echo -e "    screen -r stake-bot   # reattach"
+echo -e "    screen -r stake-bot     # sambung kembali"
+echo -e "    Ctrl+A lalu D           # lepas tanpa hentikan"
 echo
-echo -e "  ${BOLD}Update token later:${RESET}"
+echo -e "  ${BOLD}Update token nanti:${RESET}"
 echo -e "    ${INSTALL_DIR}/update_token.sh"
 echo
 
