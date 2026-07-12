@@ -75,22 +75,73 @@ _CONFIG_DEFAULTS = {
     "realtime_log_interval_rolls" : 100,  # cetak ringkasan tiap N roll (0 = nonaktif)
 }
 
+def _validate_config(cfg: dict) -> None:
+    """
+    Validasi nilai kritis SEBELUM dipakai roll loop.
+    Tanpa ini, config.json yang salah ketik (mis. circuit_breaker_at=0 atau
+    base_chance=0) bisa membuat bot crash dengan ZeroDivisionError tepat saat
+    sesi baru mulai — dan di bawah scheduler, itu jadi restart-crash tanpa henti.
+    Key yang tidak valid dikembalikan ke default (bukan seluruh config).
+    """
+    def _reset(key: str, reason: str) -> None:
+        log.error(
+            f"Config '{key}'={cfg[key]!r} tidak valid ({reason}) — "
+            f"pakai default {_CONFIG_DEFAULTS[key]!r}"
+        )
+        cfg[key] = _CONFIG_DEFAULTS[key]
+
+    if not (isinstance(cfg["base_bet"], (int, float)) and cfg["base_bet"] > 0):
+        _reset("base_bet", "harus angka > 0")
+    if not (isinstance(cfg["base_chance"], (int, float)) and 0 < cfg["base_chance"] < 100):
+        _reset("base_chance", "harus di antara 0 dan 100 (eksklusif)")
+    if not (isinstance(cfg["bet_multiplier"], (int, float)) and cfg["bet_multiplier"] > 1):
+        _reset("bet_multiplier", "harus > 1 supaya Martingale naik")
+    if not (isinstance(cfg["max_bet_multiplier"], (int, float)) and cfg["max_bet_multiplier"] > 0):
+        _reset("max_bet_multiplier", "harus > 0")
+    if not (isinstance(cfg["circuit_breaker_at"], int) and cfg["circuit_breaker_at"] >= 1):
+        _reset("circuit_breaker_at", "harus bilangan bulat >= 1")
+    if not (isinstance(cfg["max_api_retries"], int) and cfg["max_api_retries"] >= 1):
+        _reset("max_api_retries", "harus bilangan bulat >= 1")
+    if not (isinstance(cfg["hard_stop_balance"], (int, float)) and cfg["hard_stop_balance"] >= 0):
+        _reset("hard_stop_balance", "tidak boleh negatif")
+    if not (isinstance(cfg["max_cb_per_session"], int) and cfg["max_cb_per_session"] >= 0):
+        _reset("max_cb_per_session", "tidak boleh negatif")
+    if not (isinstance(cfg["realtime_log_interval_rolls"], int) and cfg["realtime_log_interval_rolls"] >= 0):
+        _reset("realtime_log_interval_rolls", "tidak boleh negatif")
+    if not (isinstance(cfg["target_profit_pct"], (int, float)) and cfg["target_profit_pct"] >= 0):
+        _reset("target_profit_pct", "tidak boleh negatif")
+    if not (isinstance(cfg["stop_loss_pct"], (int, float)) and cfg["stop_loss_pct"] >= 0):
+        _reset("stop_loss_pct", "tidak boleh negatif")
+
+
 def load_config() -> dict:
-    """Baca config.json, fallback ke default kalau key tidak ada."""
+    """Baca config.json, fallback ke default per-key kalau key tidak ada/tidak valid."""
     cfg = dict(_CONFIG_DEFAULTS)
     if not os.path.exists(CONFIG_FILE):
         log.warning(f"config.json tidak ditemukan — pakai nilai default. "
                     f"Buat file di: {CONFIG_FILE}")
         return cfg
+
     try:
         with open(CONFIG_FILE, "r") as f:
             data = json.load(f)
-        for k, v in _CONFIG_DEFAULTS.items():
-            if k in data:
-                cfg[k] = type(v)(data[k])
-        log.debug(f"Config dimuat dari {CONFIG_FILE}")
     except Exception as exc:
         log.error(f"Gagal baca config.json: {exc} — pakai nilai default")
+        return cfg
+
+    for k, default_v in _CONFIG_DEFAULTS.items():
+        if k not in data:
+            continue
+        try:
+            cfg[k] = type(default_v)(data[k])
+        except (TypeError, ValueError) as exc:
+            log.error(
+                f"Config '{k}'={data[k]!r} tidak bisa dibaca ({exc}) — "
+                f"pakai default {default_v!r}"
+            )
+
+    _validate_config(cfg)
+    log.debug(f"Config dimuat dari {CONFIG_FILE}")
     return cfg
 
 # ═══════════════════════════════════════════════════════════
