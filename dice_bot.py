@@ -57,15 +57,14 @@ log = _setup_logger()
 # ═══════════════════════════════════════════════════════════
 _CONFIG_DEFAULTS = {
     "currency"            : "idr",
-    "base_bet"            : 100.0,
+    "base_bet"            : 500.0,
     "base_chance"         : 40.0,   # chance FIXED — tidak naik saat streak
     "max_chance_cap"      : 49.5,   # tidak aktif (chance fixed), disimpan untuk kompatibilitas
     "target_profit_pct"   : 3.0,
     "stop_loss_pct"       : 5.0,
-    "bet_multiplier"      : 1.50,   # tidak aktif (True Martingale), disimpan untuk kompatibilitas
+    "bet_multiplier"      : 1.68,   # ×1.68 tiap loss (Martingale)
     "max_bet_multiplier"  : 100,
     "circuit_breaker_at"  : 5,
-    "roll_delay_ms"       : 500,
     "max_api_retries"     : 10,
     "auto_restart_session": True,
     "max_sessions"        : 0,

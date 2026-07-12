@@ -208,7 +208,6 @@ def print_vip_wager_report(cycle: int, stats_before: dict | None, stats_after: d
     if stats_after:
         flag    = stats_after["flag"]
         prog    = stats_after["progress"] * 100
-        nxt     = stats_after["next_flag"]
         lbl_cur = VIP_LABEL.get(flag, flag.capitalize())
 
         if stats_before and stats_before["flag"] != stats_after["flag"]:

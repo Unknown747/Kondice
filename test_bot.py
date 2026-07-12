@@ -13,7 +13,7 @@ Penggunaan:
   python3 test_bot.py --balance 50000 --sessions 10 --fast --seed 99
 """
 
-import os, sys, json, random, logging, argparse
+import os, sys, time, json, random, logging, argparse
 from logging.handlers import RotatingFileHandler
 
 # ═══════════════════════════════════════════════════════════
@@ -355,8 +355,6 @@ def main():
             log.info(f"  Stop-loss   : -{cfg['stop_loss_pct']:.1f}%  "
                      f"(Rp {balance * cfg['stop_loss_pct']/100:,.2f})")
             log.info(sep)
-
-            import time
 
             while state["session_active"]:
                 # Batas roll per sesi dari CLI
