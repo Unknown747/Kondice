@@ -1,35 +1,33 @@
 {
-  "_comment": "Konfigurasi Stake Dice Bot — Martingale ×1.68 + Smart Random Delay",
+  "_comment": "Stake Dice Bot — Gigi 300 | Mode Berbasis Waktu | Scheduler: 30 mnt jalan / 10 mnt jeda",
 
   "currency"            : "idr",
 
-  "base_bet"            : 500.0,
+  "base_bet"            : 300.0,
   "base_chance"         : 40.0,
   "max_chance_cap"      : 49.5,
 
-  "target_profit_pct"   : 3.0,
-  "stop_loss_pct"       : 5.0,
+  "target_profit_pct"   : 0,
+  "stop_loss_pct"       : 0,
+
   "bet_multiplier"      : 1.68,
   "max_bet_multiplier"  : 100,
   "circuit_breaker_at"  : 5,
 
   "max_api_retries"     : 10,
 
-  "auto_restart_session": true,
+  "auto_restart_session": false,
   "max_sessions"        : 0,
 
   "_notes": {
-    "base_bet"            : "Bet awal tiap siklus dalam IDR (500 IDR)",
-    "base_chance"         : "40% fixed — chance tidak dinaikkan saat streak",
-    "max_chance_cap"      : "Tidak aktif (chance fixed)",
-    "target_profit_pct"   : "3% profit per sesi lalu auto-stop",
-    "stop_loss_pct"       : "5% = ~Rp25.000 dari saldo 500k. CB=5 butuh 4+ CB berturut tanpa WIN untuk trigger SL",
-    "bet_multiplier"      : "1.68 = bet dinaikkan +68% tiap loss. Loss 1→500, 2→840, 3→1411, 4→2371, 5→3983. Total CB cost: Rp7.105",
-    "max_bet_multiplier"  : "Hard cap = base_bet × 100 = Rp50.000 per bet",
-    "circuit_breaker_at"  : "5 loss beruntun → reset ke base_bet (Cut Loss). Total biaya 1x CB: Rp7.105",
-    "max_api_retries"     : "Batas error API berturut-turut sebelum bot berhenti total",
-    "auto_restart_session": "true = mulai sesi baru otomatis setelah TP/SL",
-    "max_sessions"        : "Saran: set 10-20 untuk batasi sesi per hari. 0 = tidak terbatas",
-    "delay_info"          : "Smart Random Delay aktif — TIER1 75% (0.8-1.5s), TIER2 20% (0.4-0.7s), TIER3 5% (3.0-6.5s)"
+    "base_bet"            : "300 IDR — CB 1x cost Rp 5.463 | ketahanan >62 CB dari saldo Rp 342k",
+    "base_chance"         : "40% fixed — payout 2.475x, chance tidak dinaikkan saat streak",
+    "target_profit_pct"   : "0 = NONAKTIF — bot jalan murni berbasis waktu (dikendalikan scheduler)",
+    "stop_loss_pct"       : "0 = NONAKTIF — rem darurat satu-satunya adalah Circuit Breaker",
+    "bet_multiplier"      : "1.68 | Progression: 300→504→847→1.422→2.390 | CB cost: Rp 5.463",
+    "circuit_breaker_at"  : "5 loss beruntun → RESET ke base_bet 300, bot LANJUT (tidak restart sesi)",
+    "auto_restart_session": "false — sesi tidak di-restart via TP/SL; durasi dikendalikan scheduler",
+    "max_sessions"        : "0 = tidak terbatas; scheduler yang mengontrol waktu berhenti",
+    "delay_info"          : "Smart Random Delay — TIER1 75% (0.8-1.5s), TIER2 20% (0.4-0.7s), TIER3 5% (3.0-6.5s)"
   }
 }

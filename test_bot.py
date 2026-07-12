@@ -1,16 +1,17 @@
 """
 Test Bot — Simulasi dice_bot.py dengan uang tidak nyata
-Semua logika strategi IDENTIK dengan dice_bot.py.
+═══════════════════════════════════════════════════════════
+Semua logika strategi IDENTIK dengan dice_bot.py (Gigi 300 | Mode Berbasis Waktu).
 Tidak ada API call, tidak butuh token.
 
 Penggunaan:
-  python3 test_bot.py                        # pakai config.json, saldo default
-  python3 test_bot.py --balance 100000       # mulai dengan Rp 100.000
-  python3 test_bot.py --sessions 20          # jalankan 20 sesi lalu stop
-  python3 test_bot.py --rolls 500            # batas 500 roll per sesi
-  python3 test_bot.py --seed 42              # seed tetap (hasil reproducible)
-  python3 test_bot.py --fast                 # tanpa delay, secepat mungkin
-  python3 test_bot.py --balance 50000 --sessions 10 --fast --seed 99
+  python3 test_bot.py                              # pakai config.json, saldo default
+  python3 test_bot.py --balance 342526             # mulai dengan saldo real saat ini
+  python3 test_bot.py --sessions 10                # jalankan 10 sesi simulasi
+  python3 test_bot.py --rolls 1800                 # ~30 mnt simulasi (1 roll/detik)
+  python3 test_bot.py --seed 42                    # seed tetap (hasil reproducible)
+  python3 test_bot.py --fast                       # tanpa delay, secepat mungkin
+  python3 test_bot.py --balance 342526 --rolls 1800 --sessions 3 --fast --seed 99
 """
 
 import os, sys, time, json, random, logging, argparse
@@ -51,21 +52,21 @@ def _setup_logger() -> logging.Logger:
 log = _setup_logger()
 
 # ═══════════════════════════════════════════════════════════
-#  CONFIG — sama persis dengan dice_bot.py
+#  CONFIG — identik dengan dice_bot.py
 # ═══════════════════════════════════════════════════════════
 _CONFIG_DEFAULTS = {
     "currency"            : "idr",
-    "base_bet"            : 500.0,
-    "base_chance"         : 40.0,   # FIXED — tidak naik saat streak
-    "max_chance_cap"      : 49.5,   # tidak aktif, disimpan untuk kompatibilitas config
-    "target_profit_pct"   : 3.0,
-    "stop_loss_pct"       : 5.0,
-    "bet_multiplier"      : 1.68,   # ×1.68 tiap loss (Martingale)
+    "base_bet"            : 300.0,    # Gigi 300 — CB cost: Rp 5.463
+    "base_chance"         : 40.0,     # FIXED — payout 2.475x
+    "max_chance_cap"      : 49.5,     # tidak aktif
+    "target_profit_pct"   : 0.0,      # 0 = NONAKTIF (mode berbasis waktu)
+    "stop_loss_pct"       : 0.0,      # 0 = NONAKTIF
+    "bet_multiplier"      : 1.68,
     "max_bet_multiplier"  : 100,
     "circuit_breaker_at"  : 5,
-    "roll_delay_ms"       : 500,
+    "roll_delay_ms"       : 500,      # dipakai test_bot saat --fast tidak aktif
     "max_api_retries"     : 10,
-    "auto_restart_session": True,
+    "auto_restart_session": False,
     "max_sessions"        : 0,
 }
 
@@ -89,9 +90,8 @@ def load_config() -> dict:
 # ═══════════════════════════════════════════════════════════
 def simulate_roll(win_chance: float, rng: random.Random) -> tuple[float, float, bool]:
     """
-    Simulasi satu roll dice.
     Roll Over: menang jika result > target (100 - win_chance)
-    Mengembalikan: (result, target, won)
+    Return: (result, target, won)
     """
     target = round(100.0 - win_chance, 4)
     result = round(rng.uniform(0.0, 100.0), 4)
@@ -99,70 +99,76 @@ def simulate_roll(win_chance: float, rng: random.Random) -> tuple[float, float, 
     return result, target, won
 
 # ═══════════════════════════════════════════════════════════
-#  STATE MACHINE — Martingale ×1.68, IDENTIK dengan dice_bot.py
+#  STATE MACHINE — identik dengan dice_bot.py
 # ═══════════════════════════════════════════════════════════
 def on_win(state: dict) -> dict:
     state["current_bet"]    = state["base_bet"]
     state["current_chance"] = state["base_chance"]
     state["streak_loss"]    = 0
-    state["cycle_spent"]    = 0.0   # reset akumulasi kerugian siklus
+    state["cycle_spent"]    = 0.0
     return state
 
 
 def on_loss(state: dict, bet_placed: float) -> dict:
-    state["streak_loss"]  += 1
-    state["cycle_spent"]  += bet_placed
+    state["streak_loss"] += 1
+    state["cycle_spent"] += bet_placed
 
-    # Martingale ×1.68: tiap loss bet dikali bet_multiplier.
-    # Chance tetap FIXED di base_chance — payout stabil.
     max_bet = state["base_bet"] * state["max_bet_multiplier"]
-    state["current_bet"] = min(round(state["current_bet"] * state["bet_multiplier"], 2), max_bet)
-
+    state["current_bet"] = min(
+        round(state["current_bet"] * state["bet_multiplier"], 2), max_bet
+    )
     return state
 
 # ═══════════════════════════════════════════════════════════
-#  GUARDRAILS — IDENTIK dengan dice_bot.py
+#  GUARDRAILS — identik dengan dice_bot.py (termasuk fix TP/SL=0)
 # ═══════════════════════════════════════════════════════════
 def apply_guardrails(state: dict) -> dict:
-    # 1. Circuit breaker: reset penuh saat streak mencapai batas
+    # 1. Circuit Breaker
     if state["streak_loss"] >= state["circuit_breaker_at"]:
-        log.warning(f"⚠  Circuit Breaker ({state['circuit_breaker_at']} loss)! "
-                    f"Defisit siklus Rp {state['cycle_spent']:,.2f} — reset ke baseline.")
+        log.warning(
+            f"⚠  Circuit Breaker ({state['circuit_breaker_at']} loss)! "
+            f"Defisit siklus Rp {state['cycle_spent']:,.2f} — reset ke baseline Rp {state['base_bet']:,.0f}."
+        )
         state["current_bet"]    = state["base_bet"]
         state["current_chance"] = state["base_chance"]
         state["streak_loss"]    = 0
-        state["cycle_spent"]    = 0.0   # terima rugi siklus, mulai ulang
+        state["cycle_spent"]    = 0.0
         state["sim"]["circuit_breaker_count"] += 1
 
-    # 2. Anti-bust: bet > 10% saldo → potong 50%
+    # 2. Anti-bust
     if state["current_balance"] > 0 and \
             state["current_bet"] > state["current_balance"] * 0.10:
-        state["current_bet"] *= 0.50
+        state["current_bet"] = round(state["current_bet"] * 0.50, 2)
         log.warning("⚠  Anti-bust: bet > 10% saldo, dikurangi 50%.")
         state["sim"]["antibust_count"] += 1
 
-    # 3. Take-profit / Stop-loss per sesi
-    net          = state["current_balance"] - state["session_start_balance"]
-    tp_threshold =  state["session_start_balance"] * (state["target_profit_pct"] / 100)
-    sl_threshold = -state["session_start_balance"] * (state["stop_loss_pct"]     / 100)
+    # 3. Take-profit / Stop-loss — HANYA aktif jika pct > 0
+    #    FIX: tanpa guard ini pct=0 → threshold=0 → trigger di roll pertama (bug lama).
+    tp_pct = state["target_profit_pct"]
+    sl_pct = state["stop_loss_pct"]
 
-    if net >= tp_threshold:
-        state["session_end_reason"] = "TAKE_PROFIT"
-        state["session_active"]     = False
-    elif net <= sl_threshold:
-        state["session_end_reason"] = "STOP_LOSS"
-        state["session_active"]     = False
+    if tp_pct > 0 or sl_pct > 0:
+        net = state["current_balance"] - state["session_start_balance"]
+        if tp_pct > 0:
+            tp_threshold = state["session_start_balance"] * (tp_pct / 100)
+            if net >= tp_threshold:
+                state["session_end_reason"] = "TAKE_PROFIT"
+                state["session_active"]     = False
+                return state
+        if sl_pct > 0:
+            sl_threshold = -state["session_start_balance"] * (sl_pct / 100)
+            if net <= sl_threshold:
+                state["session_end_reason"] = "STOP_LOSS"
+                state["session_active"]     = False
 
     return state
 
 # ═══════════════════════════════════════════════════════════
-#  TELEMETRY — IDENTIK dengan dice_bot.py
+#  TELEMETRY — identik dengan dice_bot.py
 # ═══════════════════════════════════════════════════════════
 def log_roll(state: dict, result: str, roll_num: int,
              bet_used: float, chance_used: float,
              dice_result: float, target: float):
-    """bet_used & chance_used adalah snapshot SEBELUM update state,
-    agar log mencerminkan nilai yang benar-benar dipakai untuk roll ini."""
     net    = state["current_balance"] - state["session_start_balance"]
     payout = round(99 / chance_used, 4)
     log.info(
@@ -192,7 +198,7 @@ def new_session_state(cfg: dict, balance: float) -> dict:
         "current_bet"          : cfg["base_bet"],
         "current_chance"       : cfg["base_chance"],
         "streak_loss"          : 0,
-        "cycle_spent"          : 0.0,   # akumulasi kerugian sejak WIN/CB terakhir
+        "cycle_spent"          : 0.0,
         "roll_count"           : 0,
         "session_active"       : True,
         "session_end_reason"   : None,
@@ -208,11 +214,11 @@ def new_session_state(cfg: dict, balance: float) -> dict:
     }
 
 # ═══════════════════════════════════════════════════════════
-#  SESSION SUMMARY — identik + kolom tambahan simulasi
+#  SESSION SUMMARY
 # ═══════════════════════════════════════════════════════════
 def print_session_summary(session_num: int, state: dict, cum: dict):
     net    = state["current_balance"] - state["session_start_balance"]
-    reason = state.get("session_end_reason", "MANUAL_STOP")
+    reason = state.get("session_end_reason", "STOPPED")
     sep    = "═" * 64
 
     log.info(sep)
@@ -238,7 +244,7 @@ def print_session_summary(session_num: int, state: dict, cum: dict):
 
 
 def print_final_report(cum: dict, args):
-    sep = "═" * 64
+    sep        = "═" * 64
     total_bets = cum['wins'] + cum['losses']
     log.info("")
     log.info(sep)
@@ -269,14 +275,14 @@ def print_final_report(cum: dict, args):
 # ═══════════════════════════════════════════════════════════
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Simulasi dice_bot.py dengan uang tidak nyata"
+        description="Simulasi dice_bot.py Gigi 300 | Mode Berbasis Waktu"
     )
-    p.add_argument("--balance",  type=float, default=100_000.0,
-                   help="Saldo awal simulasi dalam IDR (default: 100000)")
+    p.add_argument("--balance",  type=float, default=342_526.0,
+                   help="Saldo awal simulasi dalam IDR (default: 342526)")
     p.add_argument("--sessions", type=int,   default=0,
                    help="Jumlah sesi (0 = tidak terbatas, default: 0)")
     p.add_argument("--rolls",    type=int,   default=0,
-                   help="Batas roll per sesi (0 = tidak terbatas, default: 0)")
+                   help="Batas roll per sesi — setara durasi (0 = tidak terbatas)")
     p.add_argument("--seed",     type=int,   default=None,
                    help="Random seed untuk hasil reproducible (default: acak)")
     p.add_argument("--fast",     action="store_true",
@@ -288,24 +294,21 @@ def parse_args():
 # ═══════════════════════════════════════════════════════════
 def main():
     args = parse_args()
-
-    # RNG
-    rng = random.Random(args.seed)
+    rng  = random.Random(args.seed)
     seed_info = f"seed={args.seed}" if args.seed is not None else "seed=acak"
 
     sep = "═" * 64
     log.info(sep)
-    log.info("  SIMULASI Stake Dice Bot — Uang Virtual")
+    log.info("  SIMULASI Stake Dice Bot — Gigi 300 | Mode Berbasis Waktu")
     log.info(sep)
     log.info(f"  Saldo awal      : Rp {args.balance:>12,.2f}")
     log.info(f"  Mode            : {'FAST (tanpa delay)' if args.fast else 'NORMAL'}")
     log.info(f"  Random          : {seed_info}")
     if args.sessions: log.info(f"  Batas sesi      : {args.sessions}")
-    if args.rolls:    log.info(f"  Batas roll/sesi : {args.rolls}")
+    if args.rolls:    log.info(f"  Batas roll/sesi : {args.rolls}  (setara ~{args.rolls} detik jalan)")
     log.info(f"  Log file        : {LOG_FILE}")
     log.info(sep)
 
-    # Kumulatif
     cum = {
         "sessions"             : 0,
         "total_rolls"          : 0,
@@ -323,18 +326,18 @@ def main():
         "total_antibust"       : 0,
     }
 
-    balance    = args.balance
+    balance     = args.balance
     session_num = 0
 
     try:
         while True:
             cfg = load_config()
 
-            # Override max_sessions dari CLI jika diberikan
+            # Override batas sesi dari CLI
             if args.sessions > 0:
                 cfg["max_sessions"] = args.sessions
 
-            # Cek bangkrut — saldo tidak cukup untuk satu bet
+            # Cek bangkrut
             if balance < cfg["base_bet"]:
                 log.warning(f"Saldo Rp {balance:,.2f} < base_bet Rp {cfg['base_bet']:,.2f}. "
                             f"Simulasi berhenti (bangkrut).")
@@ -345,19 +348,34 @@ def main():
             cum["sessions"] = session_num
             state           = new_session_state(cfg, balance)
 
+            # ── Header sesi ──────────────────────────────────
+            cb_cost = sum(cfg["base_bet"] * cfg["bet_multiplier"]**i
+                          for i in range(cfg["circuit_breaker_at"]))
             log.info(sep)
             log.info(f"  SESI #{session_num} DIMULAI  [VIRTUAL]")
             log.info(f"  Saldo       : Rp {balance:>12,.2f}")
             log.info(f"  Base bet    : Rp {cfg['base_bet']:>12,.2f}")
             log.info(f"  Win chance  : {cfg['base_chance']:.2f}%")
-            log.info(f"  Take-profit : +{cfg['target_profit_pct']:.1f}%  "
-                     f"(Rp {balance * cfg['target_profit_pct']/100:,.2f})")
-            log.info(f"  Stop-loss   : -{cfg['stop_loss_pct']:.1f}%  "
-                     f"(Rp {balance * cfg['stop_loss_pct']/100:,.2f})")
+            log.info(f"  CB cost 1x  : Rp {cb_cost:>10,.2f}")
+            log.info(f"  Ketahanan CB: >{int(balance / cb_cost):,} nyawa")
+
+            tp_pct = cfg["target_profit_pct"]
+            sl_pct = cfg["stop_loss_pct"]
+            if tp_pct > 0 or sl_pct > 0:
+                if tp_pct > 0:
+                    log.info(f"  Take-profit : +{tp_pct:.1f}%  (Rp {balance * tp_pct/100:,.2f})")
+                if sl_pct > 0:
+                    log.info(f"  Stop-loss   : -{sl_pct:.1f}%  (Rp {balance * sl_pct/100:,.2f})")
+            else:
+                log.info("  Mode        : BERBASIS WAKTU — TP/SL dinonaktifkan")
+                log.info(f"  Rem darurat : CB tiap {cfg['circuit_breaker_at']} loss → reset ke Rp {cfg['base_bet']:,.0f}, lanjut")
+                if args.rolls:
+                    log.info(f"  Durasi sim  : {args.rolls} roll per sesi")
             log.info(sep)
 
+            # ── Roll loop ────────────────────────────────────
             while state["session_active"]:
-                # Batas roll per sesi dari CLI
+                # Batas roll dari CLI (setara durasi scheduler)
                 if args.rolls > 0 and state["roll_count"] >= args.rolls:
                     state["session_end_reason"] = "ROLL_LIMIT"
                     state["session_active"]     = False
@@ -370,14 +388,11 @@ def main():
                 state["roll_count"] += 1
                 roll_num_global = cum["total_rolls"] + state["roll_count"]
 
-                # ── Snapshot SEBELUM update state ────────────
                 bet_used    = state["current_bet"]
                 chance_used = state["current_chance"]
 
-                # ── Simulasi roll ────────────────────────────
                 dice_result, target, won = simulate_roll(chance_used, rng)
 
-                # ── Hitung saldo ─────────────────────────────
                 if won:
                     payout_mult = 99.0 / chance_used
                     profit      = bet_used * (payout_mult - 1)
@@ -385,12 +400,11 @@ def main():
                 else:
                     state["current_balance"] -= bet_used
 
-                # ── Tracking sim ─────────────────────────────
+                # Tracking sim
                 state["sim"]["max_bet"]     = max(state["sim"]["max_bet"],     bet_used)
                 state["sim"]["min_balance"] = min(state["sim"]["min_balance"], state["current_balance"])
                 state["sim"]["max_balance"] = max(state["sim"]["max_balance"], state["current_balance"])
 
-                # ── Update state mesin ───────────────────────
                 if won:
                     cum["wins"] += 1
                     state = on_win(state)
@@ -416,10 +430,10 @@ def main():
             cum["total_circuit_breaker"] += state["sim"]["circuit_breaker_count"]
             cum["total_antibust"]        += state["sim"]["antibust_count"]
 
-            reason = state.get("session_end_reason", "MANUAL_STOP")
-            if   reason == "TAKE_PROFIT" : cum["tp_count"]     += 1
-            elif reason == "STOP_LOSS"   : cum["sl_count"]     += 1
-            else                         : cum["manual_count"] += 1
+            reason = state.get("session_end_reason", "STOPPED")
+            if   reason == "TAKE_PROFIT": cum["tp_count"]     += 1
+            elif reason == "STOP_LOSS"  : cum["sl_count"]     += 1
+            else                        : cum["manual_count"] += 1
 
             balance = state["current_balance"]
             print_session_summary(session_num, state, cum)
@@ -429,9 +443,10 @@ def main():
                 log.info(f"Batas {cfg['max_sessions']} sesi tercapai. Simulasi selesai.")
                 break
 
-            if not cfg["auto_restart_session"]:
-                log.info("auto_restart_session = false. Simulasi selesai.")
-                break
+            if not cfg["auto_restart_session"] and not (tp_pct > 0 or sl_pct > 0):
+                # Mode berbasis waktu: satu sesi per run (kecuali --sessions diberikan)
+                if args.sessions == 0 or session_num >= args.sessions:
+                    break
 
             if balance < cfg["base_bet"]:
                 log.warning("Saldo tidak cukup untuk sesi berikutnya. Simulasi berhenti.")
