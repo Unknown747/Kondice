@@ -1,10 +1,10 @@
 """
-Stake Dice Bot — IDR  |  Gigi 300  |  Mode Berbasis Waktu
+Stake Dice Bot — IDR  |  Gigi 200  |  Mode Berbasis Waktu
 ═══════════════════════════════════════════════════════════
 Strategi   : Martingale ×1.68 — tiap loss bet dikali 1.68, chance fixed 40%.
-             Progression: 300 → 504 → 847 → 1.422 → 2.390 IDR
-             CB cost 1x: Rp 5.463 | Ketahanan saldo Rp 342k: >62 CB
-Rem darurat: Circuit Breaker di loss ke-5 → reset ke base_bet (Rp 300), lanjut.
+             Progression: 200 → 336 → 564 → 948 → 1.593 IDR
+             CB cost 1x: Rp 3.642 | Ketahanan saldo Rp 342k: >93 CB
+Rem darurat: Circuit Breaker di loss ke-5 → reset ke base_bet (Rp 200), lanjut.
              TP/SL per sesi DINONAKTIFKAN (0) — tidak ada restart loop.
 Durasi     : Dikendalikan scheduler.py (30 mnt jalan / 10 mnt jeda).
 Delay      : Smart Random Delay — 3 tier probabilistik meniru pola klik manusia.
@@ -58,7 +58,7 @@ log = _setup_logger()
 # ═══════════════════════════════════════════════════════════
 _CONFIG_DEFAULTS = {
     "currency"            : "idr",
-    "base_bet"            : 300.0,    # Rp 300 — CB cost: Rp 5.463 | >62 nyawa CB
+    "base_bet"            : 200.0,    # Rp 200 — CB cost: Rp 3.642 | >93 nyawa CB
     "base_chance"         : 40.0,     # chance FIXED — payout 2.475x
     "max_chance_cap"      : 49.5,     # tidak aktif, disimpan untuk kompatibilitas
     "target_profit_pct"   : 0.0,      # 0 = NONAKTIF — mode berbasis waktu
@@ -436,7 +436,7 @@ def new_session_state(cfg: dict, balance: float) -> dict:
 def main():
     sep = "═" * 60
     log.info(sep)
-    log.info("  Stake Dice Bot — Gigi 300 | Mode Berbasis Waktu")
+    log.info("  Stake Dice Bot — Gigi 200 | Mode Berbasis Waktu")
     log.info(f"  Log file: {LOG_FILE}")
     log.info(sep)
 

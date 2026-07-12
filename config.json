@@ -1,9 +1,9 @@
 {
-  "_comment": "Stake Dice Bot — Gigi 300 | Mode Berbasis Waktu | Scheduler: 30 mnt jalan / 10 mnt jeda",
+  "_comment": "Stake Dice Bot — Gigi 200 | Mode Berbasis Waktu | Scheduler: 30 mnt jalan / 10 mnt jeda",
 
   "currency"            : "idr",
 
-  "base_bet"            : 300.0,
+  "base_bet"            : 200.0,
   "base_chance"         : 40.0,
   "max_chance_cap"      : 49.5,
 
@@ -25,12 +25,12 @@
   "realtime_log_interval_rolls" : 100,
 
   "_notes": {
-    "base_bet"                   : "300 IDR — CB 1x cost Rp 5.463 | ketahanan >62 CB dari saldo Rp 342k",
+    "base_bet"                   : "200 IDR — CB 1x cost Rp 3.642 | ketahanan >93 CB dari saldo Rp 342k",
     "base_chance"                : "40% fixed — payout 2.475x, chance tidak dinaikkan saat streak",
     "target_profit_pct"          : "0 = NONAKTIF — bot jalan murni berbasis waktu (dikendalikan scheduler)",
     "stop_loss_pct"              : "0 = NONAKTIF — rem darurat satu-satunya adalah Circuit Breaker",
-    "bet_multiplier"             : "1.68 | Progression: 300→504→847→1.422→2.390 | CB cost: Rp 5.463",
-    "circuit_breaker_at"         : "5 loss beruntun → RESET ke base_bet 300, bot LANJUT (tidak restart sesi)",
+    "bet_multiplier"             : "1.68 | Progression: 200→336→564→948→1.593 | CB cost: Rp 3.642",
+    "circuit_breaker_at"         : "5 loss beruntun → RESET ke base_bet 200, bot LANJUT (tidak restart sesi)",
     "auto_restart_session"       : "false — sesi tidak di-restart via TP/SL; durasi dikendalikan scheduler",
     "max_sessions"               : "0 = tidak terbatas; scheduler yang mengontrol waktu berhenti",
     "delay_info"                 : "Smart Random Delay — TIER1 75% (0.8-1.5s), TIER2 20% (0.4-0.7s), TIER3 5% (3.0-6.5s)",
