@@ -1,7 +1,7 @@
 """
 Test Bot — Simulasi dice_bot.py dengan uang tidak nyata
 ═══════════════════════════════════════════════════════════
-Semua logika strategi IDENTIK dengan dice_bot.py (Gigi 300 | Mode Berbasis Waktu).
+Semua logika strategi IDENTIK dengan dice_bot.py (Gigi 200 | Mode Berbasis Waktu).
 Tidak ada API call, tidak butuh token.
 
 Penggunaan:
@@ -56,7 +56,7 @@ log = _setup_logger()
 # ═══════════════════════════════════════════════════════════
 _CONFIG_DEFAULTS = {
     "currency"            : "idr",
-    "base_bet"            : 300.0,    # Gigi 300 — CB cost: Rp 5.463
+    "base_bet"            : 200.0,    # Gigi 200 — CB cost: Rp 3.642
     "base_chance"         : 40.0,     # FIXED — payout 2.475x
     "max_chance_cap"      : 49.5,     # tidak aktif
     "target_profit_pct"   : 0.0,      # 0 = NONAKTIF (mode berbasis waktu)
@@ -309,7 +309,7 @@ def print_final_report(cum: dict, args):
 # ═══════════════════════════════════════════════════════════
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Simulasi dice_bot.py Gigi 300 | Mode Berbasis Waktu"
+        description="Simulasi dice_bot.py Gigi 200 | Mode Berbasis Waktu"
     )
     p.add_argument("--balance",  type=float, default=342_526.0,
                    help="Saldo awal simulasi dalam IDR (default: 342526)")
@@ -333,7 +333,7 @@ def main():
 
     sep = "═" * 64
     log.info(sep)
-    log.info("  SIMULASI Stake Dice Bot — Gigi 300 | Mode Berbasis Waktu")
+    log.info("  SIMULASI Stake Dice Bot — Gigi 200 | Mode Berbasis Waktu")
     log.info(sep)
     log.info(f"  Saldo awal      : Rp {args.balance:>12,.2f}")
     log.info(f"  Mode            : {'FAST (tanpa delay)' if args.fast else 'NORMAL'}")
