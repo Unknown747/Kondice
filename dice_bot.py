@@ -270,9 +270,17 @@ def fetch_idr_balance(currency: str) -> float:
         raise RuntimeError(f"Gagal parse response saldo: {exc}") from exc
 
     for entry in balances:
-        avail = entry.get("available", {})
+        avail = entry.get("available") or {}
         if avail.get("currency", "").lower() == currency:
-            return float(avail["amount"])
+            amount = avail.get("amount")
+            if amount is None:
+                raise RuntimeError(
+                    f"Wallet {currency.upper()} ditemukan tapi field 'amount' kosong/null di response API."
+                )
+            try:
+                return float(amount)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(f"Nilai saldo tidak valid ({amount!r}): {exc}") from exc
 
     raise RuntimeError(
         f"Wallet {currency.upper()} tidak ditemukan di akun ini."
@@ -629,7 +637,10 @@ def main():
                 bet_used    = state["current_bet"]
                 chance_used = state["current_chance"]
 
-                won = float(dice.get("payout", 0)) > 0
+                # Guard: API kadang bisa balikin payout=null (bukan 0) saat loss —
+                # float(None) akan crash roll loop kalau tidak dijaga.
+                _raw_payout = dice.get("payout", 0)
+                won = float(_raw_payout if _raw_payout is not None else 0) > 0
                 if won:
                     cum["wins"] += 1
                     roll_net = round(bet_used * (99.0 / chance_used - 1), 2)
