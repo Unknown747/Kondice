@@ -72,6 +72,7 @@ query SchedulerStats {
     name
     flagProgress { progress flag }
     statistic { amount currency game }
+    balances { available { amount currency } }
   }
 }
 """
@@ -106,18 +107,27 @@ def fetch_stake_stats() -> dict | None:
                 total_idr = float(st.get("amount", 0))
                 break
 
+        balance_idr = 0.0
+        for b in u.get("balances", []):
+            avail = b.get("available", {})
+            if avail.get("currency") == "idr":
+                balance_idr = float(avail.get("amount", 0))
+                break
+
         return {
-            "name"      : u.get("name", "?"),
-            "flag"      : flag,
-            "progress"  : progress,
-            "next_flag" : next_flag,
-            "total_idr" : total_idr,
+            "name"       : u.get("name", "?"),
+            "flag"       : flag,
+            "progress"   : progress,
+            "next_flag"  : next_flag,
+            "total_idr"  : total_idr,
+            "balance_idr": balance_idr,
         }
     except Exception:
         return None
 
 # ── Helpers display ───────────────────────────────────────
-W = 62  # lebar box
+W           = 62        # lebar box
+IDR_PER_USD = 16_000.0  # estimasi kurs untuk tampilan USD
 
 def now_str():
     return datetime.now().strftime("%H:%M:%S")
@@ -179,58 +189,58 @@ def print_status_tick(label, remaining, total, extra=""):
 
 def print_vip_wager_report(cycle: int, stats_before: dict | None, stats_after: dict | None,
                             wager_this_cycle: float, wager_today: float,
-                            elapsed_run: float, line_count: int, restarts: int):
-    """
-    Cetak kotak laporan VIP + Wager setelah setiap run phase selesai.
-    """
-    print("\n" + "┌" + "─" * W + "┐")
-    print("│" + f"  📊  LAPORAN SIKLUS #{cycle}  —  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}".ljust(W) + "│")
+                            elapsed_run: float, line_count: int, restarts: int,
+                            saldo_awal: float, saldo_sekarang: float):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    print("\n" + "═" * (W + 2))
+    print("│  " + f"📊  LAPORAN SIKLUS #{cycle}  —  {ts}".ljust(W) + "│")
     print(box_sep())
 
-    # ── Statistik run ─────────────────────────────────────
+    # ── Ringkasan run ──────────────────────────────────────
     print(box_line("  RINGKASAN RUN"))
     print(box_line(f"  Durasi jalan   : {fmt_dur_long(elapsed_run)}"))
     print(box_line(f"  Baris log      : {line_count:,}  |  Restart bot: {restarts}"))
     print(box_sep())
 
-    # ── VIP ───────────────────────────────────────────────
-    print(box_line("  VIP STATUS"))
+    # ── VIP + Wager ────────────────────────────────────────
+    print(box_line("  VIP STATUS & AKUMULASI WAGER HARI INI"))
     if stats_after:
-        flag      = stats_after["flag"]
-        prog      = stats_after["progress"] * 100          # 0-100
-        next_flag = stats_after["next_flag"]
-        label_cur = VIP_LABEL.get(flag, flag.capitalize())
-        label_nxt = VIP_LABEL.get(next_flag, next_flag.capitalize()) if next_flag else "MAX"
-        bar       = progress_bar(prog, 24)
+        flag    = stats_after["flag"]
+        prog    = stats_after["progress"] * 100
+        nxt     = stats_after["next_flag"]
+        lbl_cur = VIP_LABEL.get(flag, flag.capitalize())
 
-        print(box_line(f"  Level saat ini : {label_cur}"))
-        print(box_line(f"  Menuju         : {label_nxt}"))
+        if stats_before and stats_before["flag"] != stats_after["flag"]:
+            lbl_bef   = VIP_LABEL.get(stats_before["flag"], stats_before["flag"].capitalize())
+            level_str = f"{lbl_bef}  -->  {lbl_cur}"
+        else:
+            level_str = lbl_cur
+
+        bar = progress_bar(prog, 24)
+        print(box_line(f"  Level saat ini : {level_str}"))
         print(box_line(f"  Progress EXP   : [{bar}]  {prog:.2f}%"))
-
-        # Delta EXP siklus ini
-        if stats_before and stats_before["flag"] == stats_after["flag"]:
-            delta_prog = (stats_after["progress"] - stats_before["progress"]) * 100
-            sign = "+" if delta_prog >= 0 else ""
-            print(box_line(f"  EXP siklus ini : {sign}{delta_prog:.4f}%"))
     else:
         print(box_line("  (Gagal ambil data VIP dari API)"))
+
+    usd = wager_today / IDR_PER_USD
+    print(box_line(f"  Wager Siklus Ini: {fmt_rp(wager_this_cycle)}"))
+    print(box_line(f"  TOTAL WAGER HARI INI (IDR) : {fmt_rp(wager_today)}"))
+    print(box_line(f"  TOTAL WAGER HARI INI (USD) : $ {usd:>10,.2f}  (Estimasi)"))
     print(box_sep())
 
-    # ── Wager ─────────────────────────────────────────────
-    print(box_line("  WAGER YANG DIHASILKAN BOT"))
-    print(box_line(f"  Siklus #{cycle:>2}      : {fmt_rp(wager_this_cycle)}"))
-    print(box_line(f"  Total hari ini : {fmt_rp(wager_today)}  ({cycle} siklus)"))
-    print(box_sep())
-
-    print(box_line("  TOTAL WAGER AKUN (IDR DICE)"))
-    if stats_after:
-        tw = stats_after["total_idr"]
-        print(box_line(f"  Sekarang       : {fmt_rp(tw)}"))
-        if stats_before:
-            delta = tw - stats_before["total_idr"]
-            print(box_line(f"  Naik siklus ini: {fmt_rp(delta)}"))
+    # ── Kondisi finansial ──────────────────────────────────
+    print(box_line("  KONDISI FINANSIAL AKUN"))
+    if saldo_awal > 0 and saldo_sekarang > 0:
+        net  = saldo_sekarang - saldo_awal
+        pct  = net / saldo_awal * 100
+        sign = "+" if net >= 0 else ""
+        net_idn = f"{abs(net):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        print(box_line(f"  Saldo Awal Hari Ini : {fmt_rp(saldo_awal)}"))
+        print(box_line(f"  Saldo Saat Ini      : {fmt_rp(saldo_sekarang)}"))
+        print(box_line(f"  Net Untung Bersih   : Rp {sign}{net_idn}  ({sign}{pct:.2f}%)"))
     else:
-        print(box_line("  (Gagal ambil data dari API)"))
+        print(box_line("  (Data saldo tidak tersedia)"))
 
     print("└" + "─" * W + "┘\n")
 
@@ -267,6 +277,9 @@ def run_phase(cycle: int, stats: dict, wager_today: float) -> tuple[float, float
         prog  = stats_before["progress"] * 100
         print(f"  [{now_str()}]  ✓  VIP: {label}  |  EXP: {prog:.2f}%  |  "
               f"Total wager: {fmt_rp(stats_before['total_idr'])}\n", flush=True)
+        # Rekam saldo awal hari ini hanya sekali (siklus pertama)
+        if stats.get("saldo_awal_hari", 0.0) == 0.0 and stats_before.get("balance_idr", 0) > 0:
+            stats["saldo_awal_hari"] = stats_before["balance_idr"]
     else:
         print(f"  [{now_str()}]  ⚠  Gagal ambil data awal (akan dicoba lagi di akhir)\n", flush=True)
 
@@ -332,7 +345,8 @@ def run_phase(cycle: int, stats: dict, wager_today: float) -> tuple[float, float
     # Snapshot VIP + wager SETELAH run
     print(f"\n  [{now_str()}]  ⟳  Mengambil data VIP & wager akhir...", flush=True)
     time.sleep(2)   # beri jeda kecil agar Stake sempat update statistik
-    stats_after = fetch_stake_stats()
+    stats_after    = fetch_stake_stats()
+    saldo_sekarang = stats_after.get("balance_idr", 0.0) if stats_after else 0.0
 
     # Hitung wager siklus ini
     wager_this_cycle = 0.0
@@ -350,14 +364,16 @@ def run_phase(cycle: int, stats: dict, wager_today: float) -> tuple[float, float
 
     # Cetak laporan
     print_vip_wager_report(
-        cycle         = cycle,
-        stats_before  = stats_before,
-        stats_after   = stats_after,
+        cycle            = cycle,
+        stats_before     = stats_before,
+        stats_after      = stats_after,
         wager_this_cycle = wager_this_cycle,
-        wager_today   = wager_today_new,
-        elapsed_run   = elapsed_real,
-        line_count    = line_count[0],
-        restarts      = restarts,
+        wager_today      = wager_today_new,
+        elapsed_run      = elapsed_real,
+        line_count       = line_count[0],
+        restarts         = restarts,
+        saldo_awal       = stats.get("saldo_awal_hari", 0.0),
+        saldo_sekarang   = saldo_sekarang,
     )
 
     return elapsed_real, wager_today_new
@@ -404,11 +420,12 @@ def main():
     print_banner()
 
     stats = {
-        "total_run"    : 0.0,
-        "total_pause"  : 0.0,
-        "total_lines"  : 0,
-        "restarts"     : 0,
-        "last_tick_run": -1,
+        "total_run"      : 0.0,
+        "total_pause"    : 0.0,
+        "total_lines"    : 0,
+        "restarts"       : 0,
+        "last_tick_run"  : -1,
+        "saldo_awal_hari": 0.0,
     }
 
     wager_today   = 0.0

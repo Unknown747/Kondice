@@ -323,18 +323,14 @@ def apply_guardrails(state: dict) -> dict:
 #  TELEMETRY — log tiap roll
 # ═══════════════════════════════════════════════════════════
 def log_roll(state: dict, result: str, roll_num: int,
-             bet_used: float, chance_used: float):
-    """Log satu roll. bet_used & chance_used adalah nilai SEBELUM update state,
-    sehingga data yang tercatat adalah apa yang benar-benar dipakai untuk bet ini."""
-    net    = state["current_balance"] - state["session_start_balance"]
-    payout = round(99 / chance_used, 4)
+             bet_used: float, chance_used: float, roll_net: float):
+    """Log satu roll. bet_used/chance_used/roll_net adalah nilai SEBELUM update state."""
     log.info(
         f"[#{roll_num:>5}] {result} | "
         f"Chance:{chance_used:>5.2f}% | "
-        f"Payout:{payout:.4f}x | "
         f"Bet:{bet_used:>10.2f} IDR | "
-        f"Streak:{state['streak_loss']:>2} | "
-        f"Net:{net:>+10.2f} IDR"
+        f"Net:{roll_net:>+10.2f} IDR | "
+        f"Saldo: Rp {state['current_balance']:,.2f}"
     )
 
 
@@ -515,12 +511,14 @@ def main():
                 won = float(dice.get("payout", 0)) > 0
                 if won:
                     cum["wins"] += 1
+                    roll_net = round(bet_used * (99.0 / chance_used - 1), 2)
                     state = on_win(state)
                 else:
                     cum["losses"] += 1
+                    roll_net = -bet_used
                     state = on_loss(state, bet_used)
                 log_roll(state, "WIN " if won else "LOSS", roll_num_global,
-                         bet_used, chance_used)
+                         bet_used, chance_used, roll_net)
 
                 # ── Delay antar roll ─────────────────────────
                 delay = cfg["roll_delay_ms"] / 1000.0
