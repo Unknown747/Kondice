@@ -19,15 +19,23 @@
   "auto_restart_session": false,
   "max_sessions"        : 0,
 
+  "_comment_risk": "── Manajemen Risiko Dinamis ──────────────────────────────────────",
+  "hard_stop_balance"           : 450000,
+  "max_cb_per_session"          : 35,
+  "realtime_log_interval_rolls" : 100,
+
   "_notes": {
-    "base_bet"            : "300 IDR — CB 1x cost Rp 5.463 | ketahanan >62 CB dari saldo Rp 342k",
-    "base_chance"         : "40% fixed — payout 2.475x, chance tidak dinaikkan saat streak",
-    "target_profit_pct"   : "0 = NONAKTIF — bot jalan murni berbasis waktu (dikendalikan scheduler)",
-    "stop_loss_pct"       : "0 = NONAKTIF — rem darurat satu-satunya adalah Circuit Breaker",
-    "bet_multiplier"      : "1.68 | Progression: 300→504→847→1.422→2.390 | CB cost: Rp 5.463",
-    "circuit_breaker_at"  : "5 loss beruntun → RESET ke base_bet 300, bot LANJUT (tidak restart sesi)",
-    "auto_restart_session": "false — sesi tidak di-restart via TP/SL; durasi dikendalikan scheduler",
-    "max_sessions"        : "0 = tidak terbatas; scheduler yang mengontrol waktu berhenti",
-    "delay_info"          : "Smart Random Delay — TIER1 75% (0.8-1.5s), TIER2 20% (0.4-0.7s), TIER3 5% (3.0-6.5s)"
+    "base_bet"                   : "300 IDR — CB 1x cost Rp 5.463 | ketahanan >62 CB dari saldo Rp 342k",
+    "base_chance"                : "40% fixed — payout 2.475x, chance tidak dinaikkan saat streak",
+    "target_profit_pct"          : "0 = NONAKTIF — bot jalan murni berbasis waktu (dikendalikan scheduler)",
+    "stop_loss_pct"              : "0 = NONAKTIF — rem darurat satu-satunya adalah Circuit Breaker",
+    "bet_multiplier"             : "1.68 | Progression: 300→504→847→1.422→2.390 | CB cost: Rp 5.463",
+    "circuit_breaker_at"         : "5 loss beruntun → RESET ke base_bet 300, bot LANJUT (tidak restart sesi)",
+    "auto_restart_session"       : "false — sesi tidak di-restart via TP/SL; durasi dikendalikan scheduler",
+    "max_sessions"               : "0 = tidak terbatas; scheduler yang mengontrol waktu berhenti",
+    "delay_info"                 : "Smart Random Delay — TIER1 75% (0.8-1.5s), TIER2 20% (0.4-0.7s), TIER3 5% (3.0-6.5s)",
+    "hard_stop_balance"          : "Bot mati TOTAL jika saldo ≤ angka ini — mengamankan modal inti. 0 = nonaktif",
+    "max_cb_per_session"         : "Hentikan sesi lebih awal jika CB ≥ N kali dalam 1 sesi — cegah drain seed buruk. 0 = nonaktif",
+    "realtime_log_interval_rolls": "Cetak ringkasan CB rate + WR + Net setiap N roll untuk monitoring. 0 = nonaktif"
   }
 }

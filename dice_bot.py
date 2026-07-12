@@ -69,6 +69,10 @@ _CONFIG_DEFAULTS = {
     "max_api_retries"     : 10,
     "auto_restart_session": False,    # tidak relevan saat TP/SL = 0
     "max_sessions"        : 0,
+    # ── Manajemen Risiko Dinamis ──────────────────────────────
+    "hard_stop_balance"           : 0.0,  # > 0 = bot mati total jika saldo ≤ angka ini
+    "max_cb_per_session"          : 0,    # > 0 = hentikan sesi jika CB ≥ N kali dalam satu run
+    "realtime_log_interval_rolls" : 100,  # cetak ringkasan tiap N roll (0 = nonaktif)
 }
 
 def load_config() -> dict:
@@ -310,14 +314,37 @@ def apply_guardrails(state: dict) -> dict:
         state["current_chance"] = state["base_chance"]
         state["streak_loss"]    = 0
         state["cycle_spent"]    = 0.0
+        state["session_cb_count"] += 1
 
-    # 2. Anti-bust — bet > 10% saldo → potong 50%
+        # max_cb_per_session — hentikan sesi jika CB terlalu banyak dalam satu run
+        max_cb = state.get("max_cb_per_session", 0)
+        if max_cb > 0 and state["session_cb_count"] >= max_cb:
+            log.warning(
+                f"⚠  MAX CB/SESI: {state['session_cb_count']}x Circuit Breaker ≥ batas {max_cb}x "
+                f"— sesi dihentikan lebih awal untuk mencegah drain ekstrem."
+            )
+            state["session_end_reason"] = "MAX_CB_SESSION"
+            state["session_active"]     = False
+            return state
+
+    # 2. hard_stop_balance — rem permanen, bot mati total jika saldo menyentuh batas aman
+    hard_stop = state.get("hard_stop_balance", 0.0)
+    if hard_stop > 0 and state["current_balance"] <= hard_stop:
+        log.warning(
+            f"🛑  HARD STOP! Saldo Rp {state['current_balance']:,.2f} ≤ batas aman "
+            f"Rp {hard_stop:,.0f} — bot dihentikan total untuk mengamankan modal inti."
+        )
+        state["session_end_reason"] = "HARD_STOP"
+        state["session_active"]     = False
+        return state
+
+    # 3. Anti-bust — bet > 10% saldo → potong 50%
     if state["current_balance"] > 0 and \
             state["current_bet"] > state["current_balance"] * 0.10:
         state["current_bet"] = round(state["current_bet"] * 0.50, 2)
         log.warning("⚠  Anti-bust: bet > 10% saldo, dikurangi 50%.")
 
-    # 3. Take-profit / Stop-loss — HANYA aktif jika pct > 0
+    # 4. Take-profit / Stop-loss — HANYA aktif jika pct > 0
     #    Nilai 0 = mode berbasis waktu, cek ini dilompati sepenuhnya.
     #    FIX: tanpa guard ini, pct=0 → threshold=0 → langsung trigger di roll pertama.
     tp_pct = state["target_profit_pct"]
@@ -396,8 +423,13 @@ def new_session_state(cfg: dict, balance: float) -> dict:
         "streak_loss"          : 0,
         "cycle_spent"          : 0.0,
         "roll_count"           : 0,
-        "session_active"       : True,
-        "session_end_reason"   : None,
+        "session_active"             : True,
+        "session_end_reason"         : None,
+        # ── Manajemen Risiko Dinamis ──────────────────────────
+        "hard_stop_balance"          : cfg["hard_stop_balance"],
+        "max_cb_per_session"         : cfg["max_cb_per_session"],
+        "realtime_log_interval_rolls": cfg["realtime_log_interval_rolls"],
+        "session_cb_count"           : 0,
     }
 
 
@@ -461,6 +493,13 @@ def main():
                 log.info("  Mode        : BERBASIS WAKTU — TP/SL dinonaktifkan")
                 log.info(f"  Rem darurat : CB tiap {cfg['circuit_breaker_at']} loss → reset ke Rp {cfg['base_bet']:,.0f}, lanjut")
                 log.info("  Durasi      : Dikendalikan scheduler (SIGTERM saat waktunya berhenti)")
+            # ── Manajemen Risiko Dinamis ──────────────────────
+            hs = cfg["hard_stop_balance"]
+            log.info(f"  Hard Stop   : Saldo ≤ Rp {hs:,.0f} → bot berhenti total" if hs > 0 else "  Hard Stop   : NONAKTIF (0)")
+            mcb = cfg["max_cb_per_session"]
+            log.info(f"  Max CB/sesi : {mcb}x → sesi berhenti lebih awal" if mcb > 0 else "  Max CB/sesi : NONAKTIF (0)")
+            rti = cfg["realtime_log_interval_rolls"]
+            log.info(f"  RT Log      : setiap {rti} roll" if rti > 0 else "  RT Log      : NONAKTIF (0)")
             log.info(sep)
 
             consecutive_errors = 0
@@ -547,6 +586,20 @@ def main():
                 log_roll(state, "WIN " if won else "LOSS", roll_num_global,
                          bet_used, chance_used, roll_net)
 
+                # ── Realtime log ringkasan setiap N roll ─────
+                interval = state.get("realtime_log_interval_rolls", 0)
+                if interval > 0 and state["roll_count"] % interval == 0:
+                    _wr      = 100 * cum["wins"] / max(cum["wins"] + cum["losses"], 1)
+                    _net     = state["current_balance"] - state["session_start_balance"]
+                    _cb_rate = state["session_cb_count"] / state["roll_count"] * 100
+                    log.info(
+                        f"[CHECKPOINT #{state['roll_count']:>4}] "
+                        f"CB sesi: {state['session_cb_count']}x ({_cb_rate:.1f}/100roll) | "
+                        f"WR: {_wr:.1f}% | "
+                        f"Net sesi: Rp {_net:>+,.0f} | "
+                        f"Saldo: Rp {state['current_balance']:,.0f}"
+                    )
+
                 # ── Smart Random Delay antar roll ────────────
                 time.sleep(smart_random_delay())
 
@@ -556,6 +609,12 @@ def main():
             print_session_summary(session_num, state, cum)
 
             reason = state.get("session_end_reason", "")
+
+            if reason == "HARD_STOP":
+                log.error("🛑  Bot dihentikan PERMANEN — hard_stop_balance tercapai.")
+                log.error(f"    Saldo: Rp {state['current_balance']:,.2f} | Batas: Rp {cfg['hard_stop_balance']:,.0f}")
+                log.error("    Restart manual diperlukan sebelum bot dapat dijalankan kembali.")
+                break
 
             if reason == "API_ERROR":
                 log.error("Bot berhenti karena error API berulang.")
