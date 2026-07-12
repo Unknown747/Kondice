@@ -6,6 +6,7 @@ Siklus: Jalan 30 menit → Jeda 10 menit → Ulangi tak terbatas
 Jalankan: python scheduler.py
 Hentikan: Ctrl+C
 """
+from __future__ import annotations
 
 import subprocess, sys, os, time, threading, signal, requests
 from datetime import datetime, timedelta

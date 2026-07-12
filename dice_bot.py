@@ -6,6 +6,7 @@ Config    : config.json (hot-reload tiap sesi baru)
 Log       : dice_bot.log (auto-rotate 5 MB)
 """
 
+from __future__ import annotations
 import os, sys, time, uuid, json, re, logging
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
