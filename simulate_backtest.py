@@ -117,8 +117,150 @@ def run_session(cfg: dict, start_balance: float, target_spins: int, rng: random.
     }
 
 
+def smart_random_delay(rng: random.Random) -> float:
+    """Sama persis dengan smart_random_delay() di dice_bot.py — 3 tier probabilistik."""
+    r = rng.random()
+    if r < 0.75:
+        return rng.uniform(0.8, 1.5)
+    elif r < 0.95:
+        return rng.uniform(0.4, 0.7)
+    else:
+        return rng.uniform(3.0, 6.5)
+
+
+def spins_in_time_budget(budget_seconds: float, rng: random.Random, api_latency: float = 0.0) -> int:
+    """Berapa banyak roll yang muat dalam budget_seconds detik, memakai delay asli dari skrip
+    ditambah estimasi latency jaringan per request (round-trip ke server Stake)."""
+    t = 0.0
+    n = 0
+    while True:
+        d = smart_random_delay(rng) + api_latency
+        if t + d > budget_seconds:
+            break
+        t += d
+        n += 1
+    return n
+
+
+def simulate_day(cfg: dict, start_balance: float, run_minutes: int, pause_minutes: int,
+                  hours: float, api_latency: float, rng: random.Random) -> dict:
+    """
+    Simulasikan 1 hari penuh mengikuti pola scheduler.py: run_minutes jalan / pause_minutes jeda,
+    berulang selama `hours` jam. Tiap fase JALAN = proses dice_bot.py baru (state bet/streak/CB
+    di-reset ke awal, TAPI saldo dilanjutkan dari fase sebelumnya — persis seperti scheduler
+    yang me-restart proses dice_bot.py tiap siklus).
+    Begitu satu fase berakhir dengan HARD_STOP, sisa hari dianggap tidak ada bet lagi (saldo
+    sudah di bawah batas aman sehingga guardrail langsung memicu lagi di awal tiap sesi baru).
+    """
+    cycle_seconds  = (run_minutes + pause_minutes) * 60
+    total_seconds  = hours * 3600
+    num_cycles     = int(total_seconds // cycle_seconds)
+
+    balance        = start_balance
+    peak_balance   = start_balance
+    max_drawdown   = 0.0
+    total_wager    = 0.0
+    wins = losses  = 0
+    total_cb       = 0
+    hard_stopped_at_phase = None
+    phase_results  = []
+
+    for phase in range(1, num_cycles + 1):
+        if hard_stopped_at_phase is not None:
+            phase_results.append({"phase": phase, "spins": 0, "net": 0.0,
+                                   "balance": balance, "reason": "HALTED_BY_HARD_STOP"})
+            continue
+
+        spins_budget = spins_in_time_budget(run_minutes * 60, rng, api_latency)
+        res = run_session(cfg, balance, spins_budget, rng)
+
+        balance      = res["end_balance"]
+        total_wager += res["total_wager"]
+        wins        += res["wins"]
+        losses      += res["losses"]
+        total_cb    += res["cb_count"]
+        peak_balance = max(peak_balance, balance)
+        max_drawdown = max(max_drawdown, peak_balance - balance)
+
+        phase_results.append({"phase": phase, "spins": res["spins"], "net": res["net"],
+                               "balance": balance, "reason": res["end_reason"]})
+
+        if res["end_reason"] in ("HARD_STOP", "BUSTED"):
+            hard_stopped_at_phase = phase
+
+    return {
+        "end_balance": balance,
+        "net": balance - start_balance,
+        "total_wager": total_wager,
+        "wins": wins,
+        "losses": losses,
+        "spins": wins + losses,
+        "cb_count": total_cb,
+        "max_drawdown": max_drawdown,
+        "num_cycles": num_cycles,
+        "hard_stopped_at_phase": hard_stopped_at_phase,
+        "phases": phase_results,
+    }
+
+
+def run_day_mode(args):
+    cfg = load_cfg()
+    if args.base_bet is not None:
+        cfg["base_bet"] = args.base_bet
+    rng = random.Random(args.seed)
+
+    trials = []
+    for _ in range(args.trials):
+        res = simulate_day(cfg, args.balance, args.run_minutes, args.pause_minutes,
+                            args.hours, args.api_latency, rng)
+        trials.append(res)
+
+    nets       = [t["net"] for t in trials]
+    spins      = [t["spins"] for t in trials]
+    wagers     = [t["total_wager"] for t in trials]
+    drawdowns  = [t["max_drawdown"] for t in trials]
+    hard_stops = sum(1 for t in trials if t["hard_stopped_at_phase"] is not None)
+    profitable = sum(1 for n in nets if n > 0)
+
+    idx_sorted   = sorted(range(len(trials)), key=lambda i: nets[i])
+    worst_i      = idx_sorted[0]
+    best_i       = idx_sorted[-1]
+    median_i     = idx_sorted[len(idx_sorted) // 2]
+
+    def describe(label, i):
+        t = trials[i]
+        print(f"  [{label}] net Rp {t['net']:>+13,.0f}  |  saldo akhir Rp {t['end_balance']:>13,.0f}  |  "
+              f"spin {t['spins']:>6,}  |  wager Rp {t['total_wager']:>14,.0f}  |  "
+              f"CB {t['cb_count']:>3}x  |  drawdown Rp {t['max_drawdown']:>12,.0f}  |  "
+              f"{'HARD STOP di fase #' + str(t['hard_stopped_at_phase']) if t['hard_stopped_at_phase'] else 'selesai 24 jam penuh'}")
+
+    print("=" * 78)
+    print(f"  SIMULASI 24 JAM — {args.trials} trial | run {args.run_minutes}mnt/jeda {args.pause_minutes}mnt "
+          f"| {args.hours:.0f} jam | saldo awal Rp {args.balance:,.0f}")
+    print(f"  Delay: smart_random_delay skrip asli + estimasi latency API {args.api_latency:.2f} dtk/request")
+    print("=" * 78)
+    print(f"  Config: base_bet=Rp{cfg['base_bet']:,.0f}  chance={cfg['base_chance']}%  mult={cfg['bet_multiplier']}  "
+          f"CB@{cfg['circuit_breaker_at']}  hard_stop=Rp{cfg.get('hard_stop_balance',0):,.0f}  "
+          f"max_cb/sesi={cfg.get('max_cb_per_session',0)}  siklus/hari={trials[0]['num_cycles']}")
+    print("-" * 78)
+    print(f"  Spin/hari      : rata2 {stats.mean(spins):>8,.0f}  |  min {min(spins):>8,}  |  max {max(spins):>8,}")
+    print(f"  Wager/hari     : rata2 Rp {stats.mean(wagers):>14,.0f}  |  min Rp {min(wagers):>14,.0f}  |  max Rp {max(wagers):>14,.0f}")
+    print(f"  Net/hari       : rata2 Rp {stats.mean(nets):>+14,.0f}  |  median Rp {stats.median(nets):>+14,.0f}")
+    print(f"  Hari profit    : {profitable}/{args.trials} ({100*profitable/args.trials:.1f}%)")
+    print(f"  Hari kena HARD STOP (berhenti total sebelum 24 jam): {hard_stops}/{args.trials} ({100*hard_stops/args.trials:.1f}%)")
+    print(f"  Max drawdown   : rata2 Rp {stats.mean(drawdowns):>14,.0f}  |  terburuk Rp {max(drawdowns):>14,.0f}")
+    print("-" * 78)
+    print("  SKENARIO REPRESENTATIF DARI HASIL TRIAL:")
+    describe("TERBURUK", worst_i)
+    describe("SEDANG  ", median_i)
+    describe("TERBAIK ", best_i)
+    print("=" * 78)
+
+
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--mode", choices=["session", "day"], default="session",
+                     help="'session' = backtest N sesi spin tetap, 'day' = simulasi 24 jam scheduler")
     ap.add_argument("--sessions", type=int, default=100)
     ap.add_argument("--spins", type=int, default=1000, help="target spins per session (avg)")
     ap.add_argument("--spins-jitter", type=int, default=150,
@@ -126,7 +268,18 @@ def main():
     ap.add_argument("--balance", type=float, default=700_000.0)
     ap.add_argument("--base-bet", type=float, default=None, help="override cfg base_bet for this run")
     ap.add_argument("--seed", type=int, default=None)
+    # --mode day khusus
+    ap.add_argument("--trials", type=int, default=200, help="jumlah hari yang disimulasikan (mode day)")
+    ap.add_argument("--run-minutes", type=int, default=30, help="durasi jalan scheduler per siklus")
+    ap.add_argument("--pause-minutes", type=int, default=10, help="durasi jeda scheduler per siklus")
+    ap.add_argument("--hours", type=float, default=24.0, help="total durasi simulasi per hari")
+    ap.add_argument("--api-latency", type=float, default=0.3,
+                    help="estimasi latency network per request roll (detik), di luar delay skrip")
     args = ap.parse_args()
+
+    if args.mode == "day":
+        run_day_mode(args)
+        return
 
     cfg = load_cfg()
     if args.base_bet is not None:
