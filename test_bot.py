@@ -55,12 +55,12 @@ log = _setup_logger()
 # ═══════════════════════════════════════════════════════════
 _CONFIG_DEFAULTS = {
     "currency"            : "idr",
-    "base_bet"            : 100.0,
+    "base_bet"            : 500.0,
     "base_chance"         : 40.0,   # FIXED — tidak naik saat streak
     "max_chance_cap"      : 49.5,   # tidak aktif, disimpan untuk kompatibilitas config
     "target_profit_pct"   : 3.0,
     "stop_loss_pct"       : 5.0,
-    "bet_multiplier"      : 1.50,   # tidak aktif, disimpan untuk kompatibilitas config
+    "bet_multiplier"      : 1.68,   # ×1.68 tiap loss (Martingale)
     "max_bet_multiplier"  : 100,
     "circuit_breaker_at"  : 5,
     "roll_delay_ms"       : 500,
@@ -99,7 +99,7 @@ def simulate_roll(win_chance: float, rng: random.Random) -> tuple[float, float, 
     return result, target, won
 
 # ═══════════════════════════════════════════════════════════
-#  STATE MACHINE — True Martingale, IDENTIK dengan dice_bot.py
+#  STATE MACHINE — Martingale ×1.68, IDENTIK dengan dice_bot.py
 # ═══════════════════════════════════════════════════════════
 def on_win(state: dict) -> dict:
     state["current_bet"]    = state["base_bet"]
@@ -113,12 +113,10 @@ def on_loss(state: dict, bet_placed: float) -> dict:
     state["streak_loss"]  += 1
     state["cycle_spent"]  += bet_placed
 
-    # Chance TIDAK dinaikkan — fixed di base_chance agar payout stabil
-    # True Martingale: bet dihitung agar 1 WIN menutup semua rugi + 1× base_bet profit
-    payout_mult  = 99.0 / state["current_chance"]
-    recovery_bet = (state["cycle_spent"] + state["base_bet"]) / (payout_mult - 1.0)
-    max_bet      = state["base_bet"] * state["max_bet_multiplier"]
-    state["current_bet"] = min(round(recovery_bet, 2), max_bet)
+    # Martingale ×1.68: tiap loss bet dikali bet_multiplier.
+    # Chance tetap FIXED di base_chance — payout stabil.
+    max_bet = state["base_bet"] * state["max_bet_multiplier"]
+    state["current_bet"] = min(round(state["current_bet"] * state["bet_multiplier"], 2), max_bet)
 
     return state
 
@@ -186,6 +184,7 @@ def new_session_state(cfg: dict, balance: float) -> dict:
         "base_chance"          : cfg["base_chance"],
         "target_profit_pct"    : cfg["target_profit_pct"],
         "stop_loss_pct"        : cfg["stop_loss_pct"],
+        "bet_multiplier"       : cfg["bet_multiplier"],
         "max_bet_multiplier"   : cfg["max_bet_multiplier"],
         "circuit_breaker_at"   : cfg["circuit_breaker_at"],
         "session_start_balance": balance,
