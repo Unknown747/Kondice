@@ -31,8 +31,8 @@ LOG_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dice_b
 # ═══════════════════════════════════════════════════════════
 def _setup_logger() -> logging.Logger:
     fmt = logging.Formatter(
-        fmt="[%(asctime)s] [%(levelname)-5s] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
+        fmt="[%(asctime)s]%(message)s",
+        datefmt="%H:%M:%S"
     )
     logger = logging.getLogger("dice_bot")
     if logger.handlers:
@@ -423,12 +423,17 @@ def apply_guardrails(state: dict) -> dict:
 # ═══════════════════════════════════════════════════════════
 def log_roll(state: dict, result: str, roll_num: int,
              bet_used: float, chance_used: float, roll_net: float):
-    """Log satu roll. bet_used/chance_used/roll_net adalah nilai SEBELUM update state."""
+    """Log satu roll. bet_used/chance_used/roll_net adalah nilai SEBELUM update state.
+    Menampilkan juga akumulasi untung/rugi sesi (dari session_start_balance)
+    supaya status profit/loss saat ini langsung kelihatan tiap baris."""
+    cum_net = state["current_balance"] - state["session_start_balance"]
+    status  = "WIN" if cum_net >= 0 else "MIN"
     log.info(
         f"[#{roll_num:>5}] {result} | "
         f"Chance:{chance_used:>5.2f}% | "
         f"Bet:{bet_used:>10.2f} IDR | "
         f"Net:{roll_net:>+10.2f} IDR | "
+        f"Total:{cum_net:>+12,.2f} IDR ({status}) | "
         f"Saldo: Rp {state['current_balance']:,.2f}"
     )
 
