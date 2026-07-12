@@ -64,9 +64,22 @@ else
     info "Creating Python virtual environment..."
     python3 -m venv "${VENV_DIR}"
 fi
-info "Installing/upgrading pip and requests..."
-"${VENV_DIR}/bin/pip" install --quiet --upgrade pip
-"${VENV_DIR}/bin/pip" install --quiet requests
+info "Upgrading pip inside venv..."
+"${VENV_DIR}/bin/python" -m pip install \
+    --upgrade pip \
+    --timeout 30 \
+    --retries 3 \
+    --no-cache-dir \
+    2>&1 | grep -v "^Requirement already"
+
+info "Installing requests..."
+"${VENV_DIR}/bin/pip" install \
+    requests \
+    --timeout 30 \
+    --retries 3 \
+    --no-cache-dir \
+    2>&1 | grep -v "^Requirement already"
+
 ok "Virtual environment ready: ${VENV_DIR}"
 
 # ── 4. Stake API token setup ─────────────────────────────────
