@@ -16,30 +16,36 @@ python dice_bot.py
 
 Set it via Replit Secrets before running.
 
-## Configuration (top of `dice_bot.py`)
+## Configuration (`config.json`)
 
-| Variable | Default | Notes |
+| Key | Value | Notes |
 |---|---|---|
-| `BASE_BET` | 100 IDR | Minimum bet per roll |
-| `BASE_CHANCE` | 5 % | Starting win probability |
-| `MAX_CHANCE_CAP` | 45 % | Win-chance ceiling on losing streaks |
-| `TARGET_PROFIT_PCT` | 15 % | Auto-stop on net +15 % gain |
-| `STOP_LOSS_PCT` | 25 % | Hard stop on net −25 % loss |
-| `ROLL_DELAY` | 0.5 s | Pause between rolls (set 0 for max speed) |
+| `base_bet` | 500 IDR | Bet awal tiap siklus |
+| `base_chance` | 40 % | Win chance, fixed (tidak naik saat streak) |
+| `bet_multiplier` | 1.68 | ×1.68 tiap loss (Martingale) |
+| `circuit_breaker_at` | 5 | Loss ke-5 → cut loss, reset ke base_bet |
+| `max_bet_multiplier` | 100 | Hard cap = base_bet × 100 = Rp 50.000 |
+| `target_profit_pct` | 3 % | Auto-stop saat profit ≥ 3 % |
+| `stop_loss_pct` | 5 % | Hard stop saat rugi ≥ 5 % |
 
 ## Strategy summary
 
-- **On win:** reset bet, chance, and streak to baseline.
-- **On loss:** every 2 consecutive losses → expand win chance +2.5 %; every 3 consecutive losses → multiply bet ×1.35.
-- **Circuit breaker:** 15 straight losses resets all state.
-- **Anti-bust:** if a single bet exceeds 10 % of remaining balance, it's halved automatically.
-- **Session ends** when take-profit or stop-loss threshold is hit.
+- **Strategi:** Martingale ×1.68 — setiap loss, bet dikali 1.68.
+- **Progression:** 500 → 840 → 1.411 → 2.371 → 3.983 IDR (5 tahap, total CB cost: Rp 7.105).
+- **On win:** reset bet dan streak ke baseline.
+- **Circuit breaker:** loss ke-5 → cut loss, reset semua ke base_bet.
+- **Anti-bust:** bet > 10 % saldo → dipotong 50 % otomatis.
+- **Session ends** saat take-profit atau stop-loss tercapai.
 
-## Telemetry format
+## Smart Random Delay
 
-```
-[Roll #    1] | Result:  W  | Chance: 5.00% | Payout: 19.8000x | Bet: 100.00 IDR | Streak: 0 | Net: +0.00 IDR
-```
+Tiga tier probabilistik meniru pola klik manusia (bukan fixed delay):
+
+| Tier | Probabilitas | Durasi | Tujuan |
+|---|---|---|---|
+| Reguler | 75 % | 0.8 – 1.5 detik | Ritme santai normal |
+| Agresif | 20 % | 0.4 – 0.7 detik | Klik cepat kejar momen |
+| Distraksi | 5 % | 3.0 – 6.5 detik | Cek saldo / terdistraksi |
 
 ## User preferences
 

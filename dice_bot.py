@@ -1,13 +1,14 @@
 """
 Stake Dice Bot — IDR
-Strategi  : True Martingale — chance fixed, bet dihitung ulang tiap loss
-            agar 1 WIN menutup semua kerugian siklus + 1× base_bet profit.
+Strategi  : Martingale ×1.68 — tiap loss bet dikali 1.68, chance fixed 40%.
+            Circuit Breaker di loss ke-5 → reset ke base_bet (cut loss).
+Delay     : Smart Random Delay — 3 tier probabilistik meniru pola klik manusia.
 Config    : config.json (hot-reload tiap sesi baru)
 Log       : dice_bot.log (auto-rotate 5 MB)
 """
 
 from __future__ import annotations
-import os, sys, time, uuid, json, re, logging
+import os, sys, time, uuid, json, re, logging, random
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
@@ -256,7 +257,25 @@ def place_dice_bet(bet_amount: float, win_chance: float, currency: str) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════
-#  STATE MACHINE — strategi modulo-2 / modulo-3
+#  SMART RANDOM DELAY — meniru pola klik manusia
+# ═══════════════════════════════════════════════════════════
+def smart_random_delay() -> float:
+    """
+    Tier 1 (75%): Jeda reguler  0.8 – 1.5 detik  → ritme santai normal
+    Tier 2 (20%): Jeda agresif  0.4 – 0.7 detik  → klik cepat kejar momen
+    Tier 3 ( 5%): Jeda distraksi 3.0 – 6.5 detik → cek saldo / terdistraksi
+    """
+    r = random.random()
+    if r < 0.75:
+        return random.uniform(0.8, 1.5)
+    elif r < 0.95:
+        return random.uniform(0.4, 0.7)
+    else:
+        return random.uniform(3.0, 6.5)
+
+
+# ═══════════════════════════════════════════════════════════
+#  STATE MACHINE — Martingale ×1.68
 # ═══════════════════════════════════════════════════════════
 def on_win(state: dict) -> dict:
     state["current_bet"]    = state["base_bet"]
@@ -270,17 +289,10 @@ def on_loss(state: dict, bet_placed: float) -> dict:
     state["streak_loss"]  += 1
     state["cycle_spent"]  += bet_placed
 
-    # Chance TIDAK dinaikkan — dengan True Martingale, menaikkan chance
-    # justru menurunkan payout sehingga recovery bet makin besar dan
-    # biaya Circuit Breaker membengkak. Chance tetap di base_chance.
-
-    # True Martingale: bet berikutnya dihitung agar 1 WIN menutup
-    # semua kerugian siklus ini + profit 1× base_bet.
-    # Formula: bet = (total_spent + base_profit) / (payout_mult - 1)
-    payout_mult  = 99.0 / state["current_chance"]
-    recovery_bet = (state["cycle_spent"] + state["base_bet"]) / (payout_mult - 1.0)
-    max_bet      = state["base_bet"] * state["max_bet_multiplier"]
-    state["current_bet"] = min(round(recovery_bet, 2), max_bet)
+    # Martingale ×1.68: tiap loss bet dikali bet_multiplier.
+    # Chance tetap FIXED di base_chance — payout stabil.
+    max_bet = state["base_bet"] * state["max_bet_multiplier"]
+    state["current_bet"] = min(round(state["current_bet"] * state["bet_multiplier"], 2), max_bet)
 
     return state
 
@@ -366,6 +378,7 @@ def new_session_state(cfg: dict, balance: float) -> dict:
         "base_chance"          : cfg["base_chance"],
         "target_profit_pct"    : cfg["target_profit_pct"],
         "stop_loss_pct"        : cfg["stop_loss_pct"],
+        "bet_multiplier"       : cfg["bet_multiplier"],
         "max_bet_multiplier"   : cfg["max_bet_multiplier"],
         "circuit_breaker_at"   : cfg["circuit_breaker_at"],
         # Dynamic
@@ -520,10 +533,8 @@ def main():
                 log_roll(state, "WIN " if won else "LOSS", roll_num_global,
                          bet_used, chance_used, roll_net)
 
-                # ── Delay antar roll ─────────────────────────
-                delay = cfg["roll_delay_ms"] / 1000.0
-                if delay > 0:
-                    time.sleep(delay)
+                # ── Smart Random Delay antar roll ────────────
+                time.sleep(smart_random_delay())
 
             # ── Sesi selesai ─────────────────────────────────
             cum["total_rolls"] += state["roll_count"]

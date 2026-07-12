@@ -1,36 +1,35 @@
 {
-  "_comment": "Konfigurasi Stake Dice Bot — parameter terbaik dari 3 putaran live test",
+  "_comment": "Konfigurasi Stake Dice Bot — Martingale ×1.68 + Smart Random Delay",
 
   "currency"            : "idr",
 
-  "base_bet"            : 100.0,
+  "base_bet"            : 500.0,
   "base_chance"         : 40.0,
   "max_chance_cap"      : 49.5,
 
   "target_profit_pct"   : 3.0,
   "stop_loss_pct"       : 5.0,
-  "bet_multiplier"      : 1.50,
+  "bet_multiplier"      : 1.68,
   "max_bet_multiplier"  : 100,
   "circuit_breaker_at"  : 5,
 
-  "roll_delay_ms"       : 500,
   "max_api_retries"     : 10,
 
   "auto_restart_session": true,
   "max_sessions"        : 0,
 
   "_notes": {
-    "base_bet"            : "Bet awal tiap siklus dalam IDR",
-    "base_chance"         : "40% fixed — tidak dinaikkan saat streak. True Martingale butuh payout stabil",
+    "base_bet"            : "Bet awal tiap siklus dalam IDR (500 IDR)",
+    "base_chance"         : "40% fixed — chance tidak dinaikkan saat streak",
     "max_chance_cap"      : "Tidak aktif (chance fixed)",
-    "target_profit_pct"   : "3% = Rp ~2.800 per sesi. Dari 15 sesi test, rata-rata exit setelah 50-60 roll",
-    "stop_loss_pct"       : "5% = Rp ~4.600. Dengan CB=5, butuh 4+ CB berturut tanpa WIN untuk trigger SL",
-    "bet_multiplier"      : "Tidak dipakai — diganti True Martingale sizing otomatis",
-    "max_bet_multiplier"  : "Hard cap = base_bet × 100 = Rp10.000 per bet",
-    "circuit_breaker_at"  : "5 = terbaik dari test. CB cost Rp1.485/event. Kurang dari 5 = lebih sering trigger, total loss sama",
-    "roll_delay_ms"       : "500ms disarankan di VPS agar tidak di-rate limit",
+    "target_profit_pct"   : "3% profit per sesi lalu auto-stop",
+    "stop_loss_pct"       : "5% = ~Rp25.000 dari saldo 500k. CB=5 butuh 4+ CB berturut tanpa WIN untuk trigger SL",
+    "bet_multiplier"      : "1.68 = bet dinaikkan +68% tiap loss. Loss 1→500, 2→840, 3→1411, 4→2371, 5→3983. Total CB cost: Rp7.105",
+    "max_bet_multiplier"  : "Hard cap = base_bet × 100 = Rp50.000 per bet",
+    "circuit_breaker_at"  : "5 loss beruntun → reset ke base_bet (Cut Loss). Total biaya 1x CB: Rp7.105",
     "max_api_retries"     : "Batas error API berturut-turut sebelum bot berhenti total",
     "auto_restart_session": "true = mulai sesi baru otomatis setelah TP/SL",
-    "max_sessions"        : "Saran: set 10-20 untuk batasi sesi per hari. 0 = tidak terbatas"
+    "max_sessions"        : "Saran: set 10-20 untuk batasi sesi per hari. 0 = tidak terbatas",
+    "delay_info"          : "Smart Random Delay aktif — TIER1 75% (0.8-1.5s), TIER2 20% (0.4-0.7s), TIER3 5% (3.0-6.5s)"
   }
 }
