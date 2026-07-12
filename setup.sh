@@ -5,326 +5,126 @@
 # ============================================================
 set -euo pipefail
 
-# ── Colours ─────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
 
-info()   { echo -e "${CYAN}[INFO]${RESET}  $*"; }
-ok()     { echo -e "${GREEN}[ OK ]${RESET}  $*"; }
-warn()   { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
-error()  { echo -e "${RED}[ERR ]${RESET}  $*" >&2; }
-banner() {
-    echo -e "\n${BOLD}${CYAN}══════════════════════════════════════════${RESET}"
-    echo -e "${BOLD}${CYAN}  $*${RESET}"
-    echo -e "${BOLD}${CYAN}══════════════════════════════════════════${RESET}\n"
-}
+info()  { echo -e "${CYAN}[INFO]${RESET}  $*"; }
+ok()    { echo -e "${GREEN}[ OK ]${RESET}  $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
+error() { echo -e "${RED}[ERR ]${RESET}  $*" >&2; }
 
-# ── OS check ────────────────────────────────────────────────
-# FIX: abort early on non-Debian/Ubuntu instead of confusing apt-get errors
+echo -e "\n${BOLD}${CYAN}══════════════════════════════════════════${RESET}"
+echo -e "${BOLD}${CYAN}  Stake Dice Bot — Setup VPS${RESET}"
+echo -e "${BOLD}${CYAN}══════════════════════════════════════════${RESET}\n"
+
+# ── Cek OS ──────────────────────────────────────────────────
 if ! command -v apt-get &>/dev/null; then
-    error "This script requires a Debian/Ubuntu-based system (apt-get not found)."
-    error "Detected OS: $(uname -s) / $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 || echo unknown)"
+    error "Script ini butuh sistem Debian/Ubuntu (apt-get tidak ditemukan)."
     exit 1
 fi
 
-# ── Paths ────────────────────────────────────────────────────
-INSTALL_DIR="${HOME}/stake-dice-bot"
-ENV_FILE="${INSTALL_DIR}/.env"
-SERVICE_NAME="stake-dice-bot"
-VENV_DIR="${INSTALL_DIR}/venv"
-
-banner "Stake Dice Bot — VPS Setup"
-
-# ── 1. System dependencies ───────────────────────────────────
-info "Updating package list..."
+# ── 1. Install paket sistem ──────────────────────────────────
+info "Update package list..."
 sudo apt-get update -qq
 
-info "Installing Python 3, pip, venv, screen, curl..."
+info "Install Python3, pip, venv, screen, curl..."
 sudo apt-get install -y -qq python3 python3-pip python3-venv screen curl
-ok "System packages ready."
+ok "Paket sistem siap."
 
-# ── 2. Project directory ─────────────────────────────────────
-info "Setting up project directory: ${INSTALL_DIR}"
-mkdir -p "${INSTALL_DIR}"
-
+# ── 2. Copy file bot ─────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+info "Folder bot: ${SCRIPT_DIR}"
 
 for FILE in dice_bot.py scheduler.py config.json; do
     if [[ -f "${SCRIPT_DIR}/${FILE}" ]]; then
-        cp "${SCRIPT_DIR}/${FILE}" "${INSTALL_DIR}/${FILE}"
-        ok "Copied ${FILE} → ${INSTALL_DIR}"
+        ok "Ditemukan: ${FILE}"
     else
-        warn "${FILE} not found next to setup.sh — copy manually to ${INSTALL_DIR}/"
+        warn "Tidak ditemukan: ${FILE} — copy manual ke folder ini sebelum jalankan bot."
     fi
 done
 
-# ── 3. Python virtual environment ────────────────────────────
-# FIX: skip venv creation if it already exists (re-run safe)
+# ── 3. Virtual environment + requests ────────────────────────
+VENV_DIR="${SCRIPT_DIR}/venv"
+
 if [[ -d "${VENV_DIR}" ]]; then
-    info "Virtual environment already exists, skipping creation."
+    info "Venv sudah ada, skip buat baru."
 else
-    info "Creating Python virtual environment..."
+    info "Membuat virtual environment..."
     python3 -m venv "${VENV_DIR}"
 fi
-info "Upgrading pip inside venv..."
-"${VENV_DIR}/bin/python" -m pip install \
-    --upgrade pip \
-    --timeout 30 \
-    --retries 3 \
-    --no-cache-dir \
+
+info "Upgrade pip..."
+"${VENV_DIR}/bin/python" -m pip install --upgrade pip \
+    --timeout 30 --retries 3 --no-cache-dir \
     2>&1 | grep -v "^Requirement already"
 
-info "Installing requests..."
-"${VENV_DIR}/bin/pip" install \
-    requests \
-    --timeout 30 \
-    --retries 3 \
-    --no-cache-dir \
+info "Install requests..."
+"${VENV_DIR}/bin/pip" install requests \
+    --timeout 30 --retries 3 --no-cache-dir \
     2>&1 | grep -v "^Requirement already"
 
-ok "Virtual environment ready: ${VENV_DIR}"
+ok "Virtual environment siap: ${VENV_DIR}"
 
-# ── 4. Stake API token setup ─────────────────────────────────
-banner "Stake API Token Setup"
+# ── 4. API Token ─────────────────────────────────────────────
+ENV_FILE="${SCRIPT_DIR}/.env"
 
-echo -e "${YELLOW}How to get your Stake API token:${RESET}"
-echo -e "  1. Login to Stake.com in your browser"
-echo -e "  2. Open DevTools (F12) → Application → Cookies"
-echo -e "  3. Find the cookie named  ${BOLD}x-access-token${RESET}  and copy its value"
-echo -e "  4. Or: DevTools → Network tab → any GraphQL request → Headers → ${BOLD}x-access-token${RESET}\n"
+echo
+echo -e "${YELLOW}Cara dapat token Stake:${RESET}"
+echo -e "  1. Login Stake.com di browser"
+echo -e "  2. DevTools (F12) → Application → Cookies → cari ${BOLD}x-access-token${RESET}"
+echo -e "  3. Atau: DevTools → Network → request GraphQL → Headers → ${BOLD}x-access-token${RESET}"
+echo
 
-EXISTING_TOKEN=""
+EXISTING=""
 if [[ -f "${ENV_FILE}" ]]; then
-    EXISTING_TOKEN=$(grep -E "^STAKE_API_KEY=" "${ENV_FILE}" 2>/dev/null | cut -d'=' -f2- || true)
+    EXISTING=$(grep -E "^STAKE_API_KEY=" "${ENV_FILE}" 2>/dev/null | cut -d'=' -f2- || true)
 fi
 
-TOKEN=""
-if [[ -n "${EXISTING_TOKEN}" ]]; then
-    warn "An API token is already saved in ${ENV_FILE}"
-    read -r -p "  Replace it with a new token? [y/N]: " REPLACE
+if [[ -n "${EXISTING}" ]]; then
+    warn "Token sudah tersimpan di ${ENV_FILE}"
+    read -r -p "  Ganti dengan token baru? [y/N]: " REPLACE
     if [[ ! "${REPLACE}" =~ ^[Yy]$ ]]; then
-        ok "Keeping existing token."
-        TOKEN="${EXISTING_TOKEN}"
+        ok "Token tetap dipakai."
+    else
+        EXISTING=""
     fi
 fi
 
-if [[ -z "${TOKEN}" ]]; then
+if [[ -z "${EXISTING}" ]]; then
     while true; do
-        read -r -s -p "  Paste your Stake API token (input hidden): " TOKEN
+        read -r -s -p "  Paste token Stake (tersembunyi): " TOKEN
         echo
         if [[ -z "${TOKEN}" ]]; then
-            error "Token cannot be empty. Try again."
+            error "Token tidak boleh kosong."
         elif [[ ${#TOKEN} -lt 20 ]]; then
-            error "Token looks too short (${#TOKEN} chars). Check and try again."
+            error "Token terlalu pendek (${#TOKEN} karakter)."
         else
             break
         fi
     done
 
-    # FIX: write token safely — use printf to avoid special-char interpolation
-    # in heredoc, and write to a temp file then atomically move it into place
-    TMP_ENV="$(mktemp "${INSTALL_DIR}/.env.XXXXXX")"
-    chmod 600 "${TMP_ENV}"
-    {
-        printf '# Stake Dice Bot — Environment Variables\n'
-        printf '# Generated by setup.sh on %s\n' "$(date -u +"%Y-%m-%d %H:%M:%S UTC")"
-        printf 'STAKE_API_KEY=%s\n' "${TOKEN}"
-    } > "${TMP_ENV}"
-    mv "${TMP_ENV}" "${ENV_FILE}"
+    TMP="$(mktemp "${SCRIPT_DIR}/.env.XXXXXX")"
+    chmod 600 "${TMP}"
+    printf 'STAKE_API_KEY=%s\n' "${TOKEN}" > "${TMP}"
+    mv "${TMP}" "${ENV_FILE}"
     chmod 600 "${ENV_FILE}"
-    ok "Token saved to ${ENV_FILE} (permissions: 600)"
+    ok "Token disimpan di ${ENV_FILE}"
 fi
 
-# ── 5. Validate token against Stake API ──────────────────────
-info "Validating token against Stake API..."
-
-# FIX: pass token via stdin/header file instead of command-line arg
-# to avoid token appearing in 'ps aux' output on a shared VPS
-TOKEN_HEADER_FILE="$(mktemp)"
-chmod 600 "${TOKEN_HEADER_FILE}"
-printf 'x-access-token: %s' "${TOKEN}" > "${TOKEN_HEADER_FILE}"
-
-HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-    -X POST "https://stake.com/_api/graphql" \
-    -H "Content-Type: application/json" \
-    -H "@${TOKEN_HEADER_FILE}" \
-    --data '{"query":"{ user { id name } }"}' \
-    --max-time 10 || echo "000")
-
-rm -f "${TOKEN_HEADER_FILE}"
-
-case "${HTTP_STATUS}" in
-    200) ok  "Token is valid — Stake API responded with HTTP 200." ;;
-    401) error "HTTP 401 — Token is invalid or expired. Update it with: ${INSTALL_DIR}/update_token.sh"
-         warn "Continuing setup, but the bot will fail until the token is fixed." ;;
-    000) warn "Could not reach Stake API (timeout/DNS). Check your VPS internet connection." ;;
-    *)   warn "Stake API returned HTTP ${HTTP_STATUS}. Proceeding anyway." ;;
-esac
-
-# ── 6. Launch wrapper scripts ────────────────────────────────
-
-# Fungsi untuk membuat launcher script
-make_launcher() {
-    local OUT="$1"
-    local SCRIPT="$2"
-    local LABEL="$3"
-    cat > "${OUT}" <<RUNSCRIPT
-#!/usr/bin/env bash
-# ${LABEL} — loads .env and starts the bot
-set -euo pipefail
-DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-
-if [[ ! -f "\${DIR}/.env" ]]; then
-    echo "[ERROR] .env file not found at \${DIR}/.env"
-    echo "        Run setup.sh again or create the file manually."
-    exit 1
-fi
-
-set -a
-# shellcheck disable=SC1091
-source "\${DIR}/.env"
-set +a
-
-if [[ -z "\${STAKE_API_KEY:-}" ]]; then
-    echo "[ERROR] STAKE_API_KEY is not set in \${DIR}/.env"
-    exit 1
-fi
-
-exec "\${DIR}/venv/bin/python" "\${DIR}/${SCRIPT}"
-RUNSCRIPT
-    chmod +x "${OUT}"
-    ok "Launcher created: ${OUT}"
-}
-
-LAUNCHER="${INSTALL_DIR}/run_bot.sh"
-SCHEDULER_LAUNCHER="${INSTALL_DIR}/run_scheduler.sh"
-
-make_launcher "${LAUNCHER}"          "dice_bot.py"   "run_bot.sh"
-make_launcher "${SCHEDULER_LAUNCHER}" "scheduler.py"  "run_scheduler.sh"
-
-# ── 7. Systemd service (optional) ────────────────────────────
-banner "Service Setup (optional)"
-read -r -p "  Install as a systemd service (auto-start on reboot)? [y/N]: " INSTALL_SERVICE
-
-if [[ "${INSTALL_SERVICE}" =~ ^[Yy]$ ]]; then
-    SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
-    # FIX: removed EnvironmentFile — run_bot.sh already sources .env;
-    # having both caused the token to be visible in 'systemctl show' output
-    sudo tee "${SERVICE_FILE}" > /dev/null <<SERVICEFILE
-[Unit]
-Description=Stake Dice Bot — Auto Scheduler (IDR)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=${USER}
-WorkingDirectory=${INSTALL_DIR}
-ExecStart=${SCHEDULER_LAUNCHER}
-Restart=on-failure
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-SERVICEFILE
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable "${SERVICE_NAME}"
-    ok "Systemd service installed: ${SERVICE_NAME}"
-    echo
-    echo -e "  ${BOLD}Service commands:${RESET}"
-    echo -e "    Start  :  sudo systemctl start  ${SERVICE_NAME}"
-    echo -e "    Stop   :  sudo systemctl stop   ${SERVICE_NAME}"
-    echo -e "    Status :  sudo systemctl status ${SERVICE_NAME}"
-    echo -e "    Logs   :  journalctl -fu         ${SERVICE_NAME}"
-else
-    ok "Skipping systemd service."
-fi
-
-# ── 8. Screen helper (manual run) ────────────────────────────
-SCREEN_HELPER="${INSTALL_DIR}/start_screen.sh"
-cat > "${SCREEN_HELPER}" <<SCREENSCRIPT
-#!/usr/bin/env bash
-# Starts the AUTO-SCHEDULER inside a detached screen session so it keeps
-# running after you close SSH.  Use 'screen -r stake-bot' to reattach.
-DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-screen -dmS stake-bot bash -c "\${DIR}/run_scheduler.sh; exec bash"
-echo "Scheduler started in screen session 'stake-bot'."
-echo "Reattach with:  screen -r stake-bot"
-echo "Detach again :  Ctrl+A then D"
-SCREENSCRIPT
-chmod +x "${SCREEN_HELPER}"
-ok "Screen helper created: ${SCREEN_HELPER}"
-
-# ── 9. Token update helper ───────────────────────────────────
-UPDATE_TOKEN="${INSTALL_DIR}/update_token.sh"
-cat > "${UPDATE_TOKEN}" <<'TOKENSCRIPT'
-#!/usr/bin/env bash
-# update_token.sh — safely replace the Stake API token
-set -euo pipefail
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="${DIR}/.env"
-
-echo "Paste your new Stake API token (input hidden):"
-read -r -s NEW_TOKEN
+# ── 5. Selesai ───────────────────────────────────────────────
 echo
-
-if [[ -z "${NEW_TOKEN}" ]]; then
-    echo "[ERROR] Token cannot be empty." >&2
-    exit 1
-fi
-
-if [[ ${#NEW_TOKEN} -lt 20 ]]; then
-    echo "[ERROR] Token looks too short (${#NEW_TOKEN} chars). Check and try again." >&2
-    exit 1
-fi
-
-# FIX: write to a temp file first, then atomically replace .env
-# (avoids partial write / corruption if interrupted)
-TMP="$(mktemp "${DIR}/.env.XXXXXX")"
-chmod 600 "${TMP}"
-
-if [[ -f "${ENV_FILE}" ]]; then
-    # Preserve any other vars already in .env, only replace the token line
-    grep -v "^STAKE_API_KEY=" "${ENV_FILE}" > "${TMP}" || true
-fi
-printf 'STAKE_API_KEY=%s\n' "${NEW_TOKEN}" >> "${TMP}"
-mv "${TMP}" "${ENV_FILE}"
-chmod 600 "${ENV_FILE}"
-
-echo "[OK] Token updated in ${ENV_FILE}"
-echo "     Restart the bot for the change to take effect."
-TOKENSCRIPT
-chmod +x "${UPDATE_TOKEN}"
-ok "Token updater created: ${UPDATE_TOKEN}"
-
-# ── 10. Summary ──────────────────────────────────────────────
-banner "Setup Complete"
-
-echo -e "  ${BOLD}Install directory :${RESET} ${INSTALL_DIR}"
-echo -e "  ${BOLD}Token file        :${RESET} ${ENV_FILE}"
+echo -e "${BOLD}${CYAN}══════════════════════════════════════════${RESET}"
+echo -e "${BOLD}${GREEN}  Setup selesai!${RESET}"
+echo -e "${BOLD}${CYAN}══════════════════════════════════════════${RESET}"
 echo
-echo -e "  ${BOLD}▶  Jalankan scheduler (foreground):${RESET}"
-echo -e "    ${INSTALL_DIR}/run_scheduler.sh"
+echo -e "  Jalankan scheduler (30 mnt jalan / 10 mnt jeda):"
+echo -e "  ${BOLD}${VENV_DIR}/bin/python scheduler.py${RESET}"
 echo
-echo -e "  ${BOLD}▶  Jalankan bot langsung saja (foreground):${RESET}"
-echo -e "    ${INSTALL_DIR}/run_bot.sh"
+echo -e "  Atau langsung botnya saja:"
+echo -e "  ${BOLD}${VENV_DIR}/bin/python dice_bot.py${RESET}"
 echo
-echo -e "  ${BOLD}▶  Jalankan di background (screen — tutup SSH aman):${RESET}"
-echo -e "    ${INSTALL_DIR}/start_screen.sh"
-echo -e "    screen -r stake-bot     # sambung kembali"
-echo -e "    Ctrl+A lalu D           # lepas tanpa hentikan"
+echo -e "  Pakai screen biar aman saat SSH putus:"
+echo -e "  ${BOLD}screen -S bot${RESET}"
+echo -e "  ${BOLD}${VENV_DIR}/bin/python scheduler.py${RESET}"
+echo -e "  Ctrl+A lalu D untuk detach"
 echo
-echo -e "  ${BOLD}Update token nanti:${RESET}"
-echo -e "    ${INSTALL_DIR}/update_token.sh"
-echo
-
-if [[ "${INSTALL_SERVICE}" =~ ^[Yy]$ ]]; then
-    echo -e "  ${BOLD}Start service:${RESET}"
-    echo -e "    sudo systemctl start ${SERVICE_NAME}"
-    echo
-fi
-
-echo -e "${GREEN}${BOLD}Ready. Run the bot and monitor its output.${RESET}\n"

@@ -93,7 +93,19 @@ def load_config() -> dict:
 def _load_api_key() -> str:
     key = os.environ.get("STAKE_API_KEY", "").strip()
     if not key:
-        log.error("STAKE_API_KEY belum diset. Set di .env atau export dulu.")
+        # Auto-load dari .env di folder yang sama dengan script ini
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        if os.path.exists(env_path):
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("STAKE_API_KEY=") and not line.startswith("#"):
+                        key = line.split("=", 1)[1].strip()
+                        break
+    if not key:
+        log.error("STAKE_API_KEY belum diset.")
+        log.error("Buat file .env di folder yang sama dengan bot, isi:")
+        log.error("  STAKE_API_KEY=token_kamu_disini")
         sys.exit(1)
     return key
 

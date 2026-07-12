@@ -17,7 +17,21 @@ BOT_SCRIPT    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dice_b
 
 # ── Stake API ─────────────────────────────────────────────
 API_URL  = "https://stake.com/_api/graphql"
-API_KEY  = os.environ.get("STAKE_API_KEY", "").strip()
+
+def _load_api_key() -> str:
+    key = os.environ.get("STAKE_API_KEY", "").strip()
+    if not key:
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        if os.path.exists(env_path):
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("STAKE_API_KEY=") and not line.startswith("#"):
+                        key = line.split("=", 1)[1].strip()
+                        break
+    return key
+
+API_KEY  = _load_api_key()
 
 # Urutan naik flag VIP di Stake
 VIP_FLAGS = ["bronze", "silver", "gold", "platinum", "diamond", "obsidian", "master"]
